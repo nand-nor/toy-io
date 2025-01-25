@@ -1,0 +1,32 @@
+[package]
+name = "imputio"
+version = "0.1.0"
+edition = "2021"
+authors = ["nand-nor <a13xandra.cliff0rd@gmail.com>"]
+
+[dependencies]
+futures-lite = "2.6.0"
+flume = "0.11.1"
+tracing = "0.1.41"
+thiserror = "1.0.59"
+
+[dev-dependencies]
+tracing-subscriber = { version="0.3.0", features=["env-filter"]}
+mio = {version="1.0.3", features=["net", "os-poll"]}
+
+[features]
+default=[]
+delay-delete=[]
+
+[[example]]
+name = "events"
+
+[[example]]
+name = "simple"
+
+[[example]]
+name = "block_on"
+
+[[example]]
+name = "server"
+path = "examples/server/main.rs"
