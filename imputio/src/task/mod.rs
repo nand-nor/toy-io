@@ -1,6 +1,8 @@
 pub mod waker;
+
 pub(crate) use waker::{ImputioTaskHeader, ImputioWaker};
 
+use futures_lite::FutureExt;
 use std::{
     fmt::Debug,
     future::Future,
@@ -13,20 +15,18 @@ use tracing::instrument;
 
 use crate::Priority;
 
-pub struct ImputioTask<T> {
+pub struct ImputioTask<T: Send + 'static> {
     pub(crate) future: Pin<Box<dyn Future<Output = T> + Send>>,
     pub(crate) waker: Arc<Waker>,
     pub(crate) priority: Priority,
+    state: Arc<AtomicBool>,
     inner: std::ptr::NonNull<ImputioTaskHeader>,
 }
 
-unsafe impl<T> Send for ImputioTask<T> {}
-unsafe impl<T> Sync for ImputioTask<T> {}
+unsafe impl<T: Send + 'static> Send for ImputioTask<T> {}
+unsafe impl<T: Send + 'static> Sync for ImputioTask<T> {}
 
-//impl<T> std::panic::UnwindSafe for ImputioTask<T> {}
-//unsafe impl<T> Sync for ImputioTask<T>{}
-
-impl<T> Debug for ImputioTask<T> {
+impl<T: Send + 'static> Debug for ImputioTask<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImputioTask")
             .field("priority", &self.priority)
@@ -34,13 +34,16 @@ impl<T> Debug for ImputioTask<T> {
     }
 }
 
-impl<T> ImputioTask<T> {
-    pub fn new(future: Pin<Box<dyn Future<Output = T> + Send>>, priority: Priority) -> Self {
-        let (waker, inner) = ImputioWaker::new_with_inner_ptr();
+use std::sync::atomic::{AtomicBool, Ordering};
 
+impl<T: Send + 'static> ImputioTask<T> {
+    pub fn new(future: Pin<Box<dyn Future<Output = T> + Send>>, priority: Priority) -> Self {
+        let state = Arc::new(AtomicBool::new(false));
+        let (waker, inner) = ImputioWaker::new_with_inner_ptr(Arc::clone(&state));
         Self {
             future,
             waker,
+            state,
             priority,
             inner: unsafe { std::ptr::NonNull::new_unchecked(inner as *mut ImputioTaskHeader) },
         }
@@ -55,46 +58,40 @@ impl<T> ImputioTask<T> {
         RawWaker::new(inner_clone as *const _, &ImputioWaker::VTABLE)
     }
 
-    //pub fn detach(&self) {}
-
     #[instrument]
-    pub fn poll(&mut self) -> Poll<T> {
+    pub fn poll_task(&mut self) -> Poll<T> {
         let waker = self.waker.clone();
         let mut cx = Context::from_waker(&waker);
-        self.future.as_mut().poll(&mut cx)
+
+        self.poll(&mut cx)
     }
 
-    // runt the future this task is holding to completion (blocking)
+    // run the future this task is holding to completion (blocking)
     #[instrument]
     pub fn run(mut self) -> T {
         tracing::debug!("running ImputioTask to completion");
-
-        let waker = self.waker.clone();
-        let mut cx = Context::from_waker(&waker);
-
         loop {
-            match self.future.as_mut().poll(&mut cx) {
-                std::task::Poll::Ready(val) => return val,
-                std::task::Poll::Pending => {
-                    //
-                    // Poll::Pending
-                    // park it then wake it?
-                    //  ImputioWaker::park( unsafe {&*(self.inner.as_ptr())});
-                    //  cx.waker().wake_by_ref();
-                    unsafe {
-                        while (*self.inner.as_ptr())
-                            .parked
-                            .load(std::sync::atomic::Ordering::SeqCst)
-                        {
-                            // loop until its not parked
-                            tracing::debug!("Parked?");
-                        }
-                        (*self.inner.as_ptr())
-                            .parked
-                            .store(false, std::sync::atomic::Ordering::SeqCst);
-                    }
-                }
+            let waker = self.waker.clone();
+            let mut cx = Context::from_waker(&waker);
+            match self.poll(&mut cx) {
+                Poll::Ready(val) => return val,
+                Poll::Pending => {}
             }
+        }
+    }
+}
+
+impl<T: Send + 'static> Future for ImputioTask<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let s = self.get_mut();
+        match Pin::new(&mut s.future).poll(cx) {
+            Poll::Ready(output) => {
+                s.state.store(true, Ordering::Release);
+                Poll::Ready(output)
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }

@@ -346,8 +346,12 @@ impl<T: Send + Clone> EventBusHandle<T> {
         let (tx, rx) = flume::unbounded();
         let bus = EventBus::new(rx);
 
-        // This will run the bus actor as a detached task, when it drops out of scope
-        let _task = spawn!(bus.run(), Priority::High);
+        // bus must run in it's own thread
+        std::thread::spawn(move || {
+            let task = spawn!(bus.run(), Priority::High);
+            task.receiver().recv().ok();
+        });
+
         let handle = EventBusHandle { tx, id: NULL_SUBID };
         Ok(handle)
     }

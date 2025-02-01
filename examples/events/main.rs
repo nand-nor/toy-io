@@ -60,7 +60,7 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
                 imputio_utils::event_bus::cleanup_task(garbage_bus).await;
             };
             // spawn it at best effort priority
-            imputio::spawn_blocking!(fut, Priority::BestEffort);
+            imputio::spawn!(fut, Priority::BestEffort);
         });
     }
 
@@ -81,7 +81,7 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
         let fut = async move {
             sleep_and_send_more_events(&publisher_two).await;
         };
-        imputio::spawn_blocking!(fut, Priority::Medium);
+        imputio::spawn!(fut, Priority::High);
     });
 
     event_poll_matcher(&subscriber, matcher_two, Some((tx_2, ())))
@@ -102,6 +102,9 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
 
     // drop the event bus actor handle
     let _ = handle;
+    let _ = subscriber;
+    let _ = publisher_one;
+    let _ = publisher_two;
 
     Ok(())
 }
