@@ -3,26 +3,13 @@ use std::{
     future::Future,
     marker::PhantomData,
     num::NonZero,
+    sync::{Arc, Mutex},
     thread::{self, JoinHandle, ThreadId},
 };
 
-use crate::{spawn_blocking, ImputioTaskHandle, Priority};
+use crate::{spawn_blocking, Executor};
 
-pub trait RuntimeScheduler {
-    fn spawn<F, T>(&mut self, fut: F) -> ImputioTaskHandle<T>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static;
-
-    fn priority_spawn<F, T>(&mut self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static;
-
-    fn poll(&mut self);
-}
-
-pub struct ImputioRuntime<S: RuntimeScheduler + 'static> {
+pub struct ImputioRuntime<S: 'static> {
     num_cores: usize,
     scheduler: PhantomData<S>,
     exec_thread_id: ThreadId,
@@ -31,13 +18,7 @@ pub struct ImputioRuntime<S: RuntimeScheduler + 'static> {
     shutdown_rx: flume::Receiver<()>,
 }
 
-impl<S: RuntimeScheduler + 'static> Default for ImputioRuntime<S> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<S: RuntimeScheduler + 'static> Debug for ImputioRuntime<S> {
+impl<S: 'static> Debug for ImputioRuntime<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImputioRuntime")
             .field("exec_thread_id", &self.exec_thread_id)
@@ -45,7 +26,13 @@ impl<S: RuntimeScheduler + 'static> Debug for ImputioRuntime<S> {
     }
 }
 
-impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
+impl Default for ImputioRuntime<Executor> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImputioRuntime<Executor> {
     pub fn new() -> Self {
         let num_cores = thread::available_parallelism()
             .unwrap_or(NonZero::new(1usize).unwrap())
@@ -83,16 +70,16 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
         let tx = self.shutdown_tx.clone();
         let rx = self.shutdown_rx.clone();
 
-        // hold the handle, allows us to abort if needed
-        let handle = std::thread::spawn(move || {
-            let exec = unsafe { crate::EXECUTOR.get_mut_or_init(crate::Executor::initialize) };
+        let handle = std::thread::spawn(move || loop {
+            let mut exec = crate::EXECUTOR
+                .get_or_init(|| Arc::new(Mutex::new(Box::new(Executor::initialize()))))
+                .lock()
+                .unwrap_or_else(|_| panic!("panic"));
 
-            loop {
-                exec.poll();
-                if let Ok(()) = rx.try_recv() {
-                    tracing::debug!("Shutdown notice received");
-                    break;
-                }
+            exec.poll();
+            if let Ok(()) = rx.try_recv() {
+                tracing::debug!("Shutdown notice received");
+                break;
             }
         });
 
@@ -100,10 +87,10 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
         tx
     }
 
-    pub fn block_on<F, R>(self, fut: F) -> R
+    pub fn block_on<J, T>(self, fut: J) -> T
     where
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static,
+        J: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
     {
         spawn_blocking!(fut)
     }

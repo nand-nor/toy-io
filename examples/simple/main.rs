@@ -51,7 +51,7 @@ impl IntoFuture for OtherExampleTask {
     type Output = usize;
 
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
-    #[tracing::instrument]
+
     fn into_future(mut self) -> Self::IntoFuture {
         Box::pin(async move {
             self.count += 1;
@@ -79,19 +79,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let async_fn_task = spawn!(async { async_fn().await }, Priority::Medium);
 
-    let t_three = spawn!(async move { three.await }, Priority::Low);
+    let t_three = spawn!(async { three.await }, Priority::High);
 
     let res_vec = vec![
-        t_one.receiver().recv(),
-        t_three.receiver().recv(),
-        async_fn_task.receiver().recv(),
+        t_one.receiver().recv()?,
+        t_three.receiver().recv()?,
+        async_fn_task.receiver().recv()?,
     ];
 
     res_vec.into_iter().for_each(|r| {
         tracing::info!("Result: {:?}", r);
     });
 
-    let t_two = spawn_blocking!(two, Priority::BestEffort);
+    let t_two = spawn_blocking!(two, Priority::High);
 
     tracing::info!("Blocking result: {:?}", t_two);
 

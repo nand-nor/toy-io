@@ -21,13 +21,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
     ImputioRuntime::<Executor>::new().run();
 
-    let fut = async move {
-        event_bus_example().await?;
-        Ok(())
-    };
-
     let task: imputio::ImputioTaskHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>> =
-        spawn!(async move { fut.await }, Priority::High);
+        spawn!(event_bus_example(), Priority::High);
     task.receiver().recv()??;
 
     Ok(())
@@ -52,7 +47,7 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     // Simulate some events; make sure there are events on the bus
     // before blocking waiting for them, otherwise the events will
     // never get onto the bus (because currently single threaded)
-    simulate_packet_send_events(&handle).await;
+    simulate_packet_send_events(handle).await;
 
     #[cfg(feature = "delay-delete")]
     {
@@ -76,7 +71,7 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     event_poll_matcher(&handle_one, matcher_one, Some((tx_1, ())))
         .await
         .ok();
-    event_poll_matcher(&handle, matcher_two, Some((tx_2, ())))
+    event_poll_matcher(handle, matcher_two, Some((tx_2, ())))
         .await
         .ok();
 

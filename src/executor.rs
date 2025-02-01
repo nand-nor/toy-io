@@ -1,7 +1,11 @@
-use std::{collections::VecDeque, future::Future, pin::Pin};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
-    runtime::RuntimeScheduler,
     task::{ImputioTask, ImputioTaskHandle},
     Priority,
 };
@@ -21,28 +25,6 @@ impl Default for Executor {
     }
 }
 
-impl crate::RuntimeScheduler for Executor {
-    fn spawn<F, T>(&mut self, fut: F) -> ImputioTaskHandle<T>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
-    {
-        Executor::spawn(self, fut, Priority::Medium)
-    }
-
-    fn poll(&mut self) {
-        Executor::poll(self)
-    }
-
-    fn priority_spawn<F, T>(&mut self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
-    {
-        Executor::spawn(self, fut, priority)
-    }
-}
-
 impl Executor {
     pub(crate) fn initialize() -> Self {
         Self {
@@ -50,27 +32,31 @@ impl Executor {
         }
     }
 
-    fn spawn<F, T>(&mut self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
-    {
+    fn spawn<T: Send + 'static>(
+        &mut self,
+        fut: impl Future<Output = T> + Send + 'static,
+        priority: Priority,
+    ) -> ImputioTaskHandle<T> {
         let (tx, rx) = flume::unbounded();
+
         let spawn_fut: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
             tx.send(fut.await).ok();
         });
 
         let task = ImputioTask::new(spawn_fut, priority);
-        self.tasks[priority as usize].push_back(task);
 
+        self.tasks[priority as usize].push_back(task);
         ImputioTaskHandle { receiver: rx }
     }
 
     /// Skips enqueuing the future to task queue, creates a new task and blocks until
     /// it completes
-    pub(crate) fn spawn_blocking<F, T>(&mut self, fut: F, priority: Priority) -> T
+    pub(crate) fn spawn_blocking<T>(
+        &mut self,
+        fut: impl Future<Output = T> + Send + 'static,
+        priority: Priority,
+    ) -> T
     where
-        F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
         let spawn_fut: Pin<Box<dyn Future<Output = T> + Send>> = Box::pin(fut);
@@ -87,7 +73,7 @@ impl Executor {
     pub fn poll(&mut self) {
         // check first if any non-io specific futures have been enqueued
         if let Some(mut task) = self.get_task() {
-            match task.poll() {
+            match task.poll_task() {
                 std::task::Poll::Ready(_val) => {}
                 std::task::Poll::Pending => {
                     self.tasks[task.priority as usize].push_back(task);
@@ -102,10 +88,11 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    unsafe {
-        let exec = crate::EXECUTOR.get_mut_or_init(Executor::initialize);
-        exec.priority_spawn(fut, priority)
-    }
+    let mut exec = crate::EXECUTOR
+        .get_or_init(|| Arc::new(Mutex::new(Box::new(Executor::initialize()))))
+        .lock()
+        .unwrap_or_else(|_| panic!("panic"));
+    exec.spawn(fut, priority)
 }
 
 pub fn imputio_spawn_blocking<F, T>(fut: F, priority: crate::Priority) -> T
@@ -113,8 +100,9 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    unsafe {
-        let exec = crate::EXECUTOR.get_mut_or_init(Executor::initialize);
-        exec.spawn_blocking(fut, priority)
-    }
+    let mut exec = crate::EXECUTOR
+        .get_or_init(|| Arc::new(Mutex::new(Box::new(Executor::initialize()))))
+        .lock()
+        .unwrap_or_else(|_| panic!("panic"));
+    exec.spawn_blocking(fut, priority)
 }

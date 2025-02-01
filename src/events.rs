@@ -44,7 +44,7 @@ pub enum EventBusMessage<T> {
     CleanUpBgTask,
 }
 
-/// The `EventBus` is an actor that allows 
+/// The `EventBus` is an actor that allows
 /// subscribing to and polling for events
 pub struct EventBus<T: Send + Clone> {
     receiver: flume::Receiver<EventBusMessage<T>>,
@@ -81,8 +81,10 @@ impl<T: Send + Clone> EventBus<T> {
         let (tx, rx) = flume::unbounded();
         let bus = Self::new(rx);
 
-        // This will run the bus actor as a detached task, when it drops out of scope
-        let _task = spawn!(bus.run(), Priority::High);
+        std::thread::spawn(move || {
+            let task = spawn!(bus.run(), Priority::High);
+            task.receiver().recv().ok();
+        });
 
         // create temp handle to get valid subscription ID (only need to do this once)
         // otherwise events wont be enqueued for the handle's unique ID
@@ -106,7 +108,10 @@ impl<T: Send + Clone> EventBus<T> {
         let (tx, rx) = flume::unbounded();
         let bus = Self::new(rx);
         // run the bus actor as a detached task
-        let _task = spawn!(bus.run(), Priority::High);
+        std::thread::spawn(move || {
+            let task = spawn!(bus.run(), Priority::High);
+            task.receiver().recv().ok();
+        });
 
         // ID of 0 indicates the handle is unsubscribed
         let handle = EventHandle { tx, id: 0 };
