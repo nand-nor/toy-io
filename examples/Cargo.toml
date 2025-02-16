@@ -1,0 +1,34 @@
+[package]
+name = "imputio-examples"
+version = "0.0.0"
+edition = "2021"
+authors = ["nand-nor <a13xandra.cliff0rd@gmail.com>"]
+
+[dependencies]
+futures-lite.workspace=true
+flume.workspace=true
+tracing.workspace=true
+thiserror.workspace=true
+imputio-utils.workspace=true
+imputio.workspace=true
+tracing-subscriber = { version="0.3.0", features=["env-filter"]}
+mio = {version="1.0.3", features=["net", "os-poll"]}
+
+[features]
+delay-delete=["imputio-utils/delay-delete"]
+
+[[example]]
+name = "events"
+path = "./events/main.rs"
+
+[[example]]
+name = "simple"
+path = "./simple/main.rs"
+
+[[example]]
+name = "block_on"
+path = "./block_on/main.rs"
+
+[[example]]
+name = "server"
+path = "./server/main.rs"

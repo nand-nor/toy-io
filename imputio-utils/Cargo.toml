@@ -1,0 +1,15 @@
+[package]
+name = "imputio-utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+futures-lite.workspace=true
+flume.workspace=true
+tracing.workspace=true
+thiserror.workspace=true
+imputio.workspace=true
+
+
+[features]
+delay-delete=[]
