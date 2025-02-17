@@ -1,6 +1,6 @@
 [package]
 name = "imputio"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["nand-nor <a13xandra.cliff0rd@gmail.com>"]
 
@@ -9,3 +9,8 @@ futures-lite.workspace=true
 flume.workspace=true
 tracing.workspace=true
 thiserror.workspace=true
+rand = {version = "0.9.0", optional=true}
+
+[features]
+default=[]
+fairness=["dep:rand"]

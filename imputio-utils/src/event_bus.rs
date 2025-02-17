@@ -170,10 +170,11 @@ impl<T: Send + Clone> EventBus<T> {
 
     #[cfg(feature = "delay-delete")]
     async fn cleanup(&mut self) {
+        tracing::debug!("Calling cleanup for all unsubbed handles");
         let cleanup = self.recycle.clone();
         self.recycle.clear();
         for id in cleanup.iter() {
-            tracing::info!("Cleaning up events from id {id:}");
+            tracing::debug!("Cleaning up events from id {id:}");
             self.event_queues.remove(id);
         }
     }
@@ -346,8 +347,12 @@ impl<T: Send + Clone> EventBusHandle<T> {
         let (tx, rx) = flume::unbounded();
         let bus = EventBus::new(rx);
 
-        // This will run the bus actor as a detached task, when it drops out of scope
-        let _task = spawn!(bus.run(), Priority::High);
+        // TODO run this at system priority
+        std::thread::spawn(move || {
+            let task = spawn!(bus.run(), Priority::High);
+            task.receiver().recv().ok();
+        });
+
         let handle = EventBusHandle { tx, id: NULL_SUBID };
         Ok(handle)
     }
@@ -414,7 +419,7 @@ pub async fn cleanup_task<T: Send + Clone>(handle: EventBusHandle<T>) {
         tracing::trace!("Executing clean up logic on event bus");
         handle.cleanup().await;
         thread::yield_now();
-        thread::park_timeout(Duration::from_secs(2));
+        thread::park_timeout(Duration::from_secs(5));
     }
 }
 
