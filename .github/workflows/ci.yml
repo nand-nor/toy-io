@@ -1,0 +1,56 @@
+name: Runner for CI
+
+on:
+  workflow_call:
+  push:
+  pull_request:
+    branches: [main]
+    types:
+      - opened
+      - merged
+
+jobs:
+  build:
+    name: CI Build & Run
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - uses: actions/checkout@v3
+
+      - name: compile & run check
+        run: |
+          cargo run --example server
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - uses: actions/checkout@v3
+
+      - name: test check
+        run: |
+          cargo test
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - uses: actions/checkout@v3
+
+      - name: clippy check
+        run: |
+          cargo clippy --all-features -- -D warnings
