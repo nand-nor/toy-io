@@ -10,6 +10,6 @@ authors = ["nand-nor <a13xandra.cliff0rd@gmail.com>"]
 futures-lite = "2.6.0"
 flume = "0.11.1"
 tracing = "0.1.41"
-thiserror = "1.0.59"
+thiserror = "2.0.11"
 imputio = { path = "./imputio"}
 imputio-utils= {path="./imputio-utils"}
