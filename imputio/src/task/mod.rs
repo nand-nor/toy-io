@@ -51,7 +51,7 @@ impl<T> ImputioTask<T> {
     }
 
     pub fn raw_waker(&self) -> RawWaker {
-        let inner_clone = Arc::into_raw(Arc::new(self.inner.as_ptr()));
+        let inner_clone = self.inner.as_ptr();
         RawWaker::new(inner_clone as *const _, &ImputioWaker::VTABLE)
     }
 

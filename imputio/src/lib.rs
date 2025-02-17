@@ -6,20 +6,17 @@
 // todo figure out better way that does not require nightly
 #![feature(once_cell_get_mut)]
 
-pub mod events;
 mod executor;
 mod runtime;
 mod task;
 #[macro_use]
 pub mod macros;
 
-pub use events::{event_poll_matcher, EventBus, EventHandle};
 pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, Executor};
-
 pub use runtime::{ImputioRuntime, RuntimeScheduler};
 pub use task::{ImputioTask, ImputioTaskHandle};
 
-// FIXME
+// FIXME can we make this lockless / wait free while also being global?
 pub static mut EXECUTOR: std::sync::OnceLock<Executor> = std::sync::OnceLock::new();
 
 /// Priority is used to enqueue tasks onto priority queues
