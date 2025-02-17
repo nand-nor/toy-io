@@ -3,8 +3,6 @@ members=["imputio", "imputio-utils", "examples"]
 resolver = "2"
 
 [workspace.package]
-name = "imputio"
-version = "0.2.0"
 edition = "2021"
 authors = ["nand-nor <a13xandra.cliff0rd@gmail.com>"]
 
