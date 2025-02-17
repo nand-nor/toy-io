@@ -81,9 +81,9 @@ impl<T> std::fmt::Debug for EventBusMessage<T> {
     }
 }
 
-/// The [`EventBus`] is an actor that allows
+/// The [`EventBus`] object is an actor that allows
 /// publishing and subscribing to events
-pub struct EventBus<T: Send + Clone> {
+struct EventBus<T: Send + Clone> {
     receiver: flume::Receiver<EventBusMessage<T>>,
     event_queues: HashMap<SubId, VecDeque<T>>,
     ids: HashSet<SubId>,
@@ -111,48 +111,6 @@ impl<T: Send + Clone> EventBus<T> {
         }
     }
 
-    pub async fn new_with_handle() -> Result<&'static EventHandle<T>>
-    where
-        T: 'static,
-    {
-        let (tx, rx) = flume::unbounded();
-        let bus = Self::new(rx);
-
-        // This will run the bus actor as a detached task, when it drops out of scope
-        let _task = spawn!(bus.run(), Priority::High);
-
-        // create temp handle to get valid subscription ID (only need to do this once)
-        // otherwise events wont be enqueued for the handle's unique ID
-        let mut handle = EventHandle { tx, id: NULL_SUBID };
-
-        // reassign handle to what is returned from the subscribe future
-        handle = handle
-            .subscribe()
-            .await
-            .map_err(|e| EventBusError::ActorError(e.to_string()))?;
-
-        // leak the handle to the 'static lifetime
-        let handle: &'static EventHandle<T> = Box::leak(Box::new(handle));
-        Ok(handle)
-    }
-
-    pub async fn new_with_unsubscribed_handle() -> Result<&'static EventHandle<T>>
-    where
-        T: 'static,
-    {
-        let (tx, rx) = flume::unbounded();
-        let bus = Self::new(rx);
-        // run the bus actor as a detached task
-        let _task = spawn!(bus.run(), Priority::High);
-
-        // ID of 0 indicates the handle is unsubscribed
-        let handle = EventHandle { tx, id: NULL_SUBID };
-
-        // leak the handle to the 'static lifetime
-        let handle: &'static EventHandle<T> = Box::leak(Box::new(handle));
-        Ok(handle)
-    }
-
     pub async fn run(mut self) {
         while let Ok(event) = self.receiver.recv_async().await {
             match event {
@@ -162,7 +120,7 @@ impl<T: Send + Clone> EventBus<T> {
                     None
                 }
                 EventBusMessage::PushEvent { event, reply } => {
-                    reply.send(self.send(event).await).ok()
+                    reply.send(self.push_to_event_queues(event).await).ok()
                 }
                 EventBusMessage::Poll { id, reply } => reply.send(self.poll(id).await).ok(),
                 EventBusMessage::BatchPoll { id, reply } => {
@@ -220,17 +178,17 @@ impl<T: Send + Clone> EventBus<T> {
         }
     }
 
-    async fn send(&mut self, event: T) -> Result<()> {
-        tracing::debug!("Received event");
+    async fn push_to_event_queues(&mut self, event: T) -> Result<()> {
+        tracing::trace!("Received event");
         for (_, v) in self.event_queues.iter_mut() {
             v.push_back(event.clone());
         }
         Ok(())
     }
 
-    #[instrument]
     /// poll to return the top of the event queue for the subscriber, if
     /// there is an event
+    #[instrument]
     async fn poll(&mut self, id: SubId) -> Result<Option<T>> {
         let item = self.event_queues.get_mut(&id).or(None);
         if let Some(item) = item {
@@ -240,9 +198,9 @@ impl<T: Send + Clone> EventBus<T> {
         }
     }
 
-    #[instrument]
     /// Batch poll will return all of the currently accumulated events in a
     /// single call
+    #[instrument]
     async fn batch_poll(&mut self, id: SubId) -> Result<Vec<T>> {
         let item = self.event_queues.get_mut(&id).or(None);
         let mut items = vec![];
@@ -255,20 +213,51 @@ impl<T: Send + Clone> EventBus<T> {
     }
 }
 
-/// Provides the handle to the [`EventBus`] actor
+/// Provides a subscribe handle to the [`EventBus`] actor
 #[derive(Clone)]
-pub struct EventHandle<T: Send + Clone> {
+pub struct SubHandle<T: Send + Clone> {
     tx: flume::Sender<EventBusMessage<T>>,
     id: SubId,
 }
 
-impl<T: Send + Clone> std::fmt::Debug for EventHandle<T> {
+impl<T: Send + Clone> std::fmt::Debug for SubHandle<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventHandle").field("id", &self.id).finish()
+        f.debug_struct("SubHandle")
+            .field("tx", &self.tx)
+            .field("id", &self.id)
+            .finish()
     }
 }
 
-impl<T: Send + Clone> EventHandle<T> {
+impl<T: Send + Clone> SubHandle<T> {
+    #[instrument]
+    pub async fn subscribe(&self) -> Result<SubHandle<T>> {
+        let (tx, rx) = flume::bounded(1);
+        self.tx
+            .send(EventBusMessage::Subscribe { reply: tx })
+            .map_err(|e| {
+                tracing::error!("Send error: {e:}");
+                EventBusError::ChannelSendError
+            })?;
+        let new_id = rx.recv_async().await??;
+
+        Ok(SubHandle {
+            id: new_id,
+            tx: self.tx.clone(),
+        })
+    }
+
+    #[instrument]
+    pub async fn unsubscribe(&self, id: SubId) -> Result<()> {
+        self.tx
+            .send(EventBusMessage::Unsubscribe { id })
+            .map_err(|e| {
+                tracing::error!("Send error: {e:}");
+                EventBusError::ChannelSendError
+            })?;
+        Ok(())
+    }
+
     #[instrument]
     pub async fn poll(&self) -> Result<Option<T>> {
         let (tx, rx) = flume::bounded(1);
@@ -284,45 +273,6 @@ impl<T: Send + Clone> EventHandle<T> {
             })?;
 
         rx.recv_async().await?
-    }
-
-    #[instrument]
-    pub async fn subscribe(&self) -> Result<Self> {
-        let (tx, rx) = flume::bounded(1);
-        self.tx
-            .send(EventBusMessage::Subscribe { reply: tx })
-            .map_err(|e| {
-                tracing::error!("Send error: {e:}");
-                EventBusError::ChannelSendError
-            })?;
-        let new_id = rx.recv_async().await??;
-        Ok(Self {
-            id: new_id,
-            tx: self.tx.clone(),
-        })
-    }
-
-    pub async fn push_event(&self, event: T) -> Result<()> {
-        let (tx, rx) = flume::bounded(1);
-        self.tx
-            .send(EventBusMessage::PushEvent { event, reply: tx })
-            .map_err(|e| {
-                tracing::error!("Send error: {e:}");
-                EventBusError::ChannelSendError
-            })?;
-
-        rx.recv_async().await?
-    }
-
-    #[instrument]
-    pub async fn unsubscribe(&self, id: SubId) -> Result<()> {
-        self.tx
-            .send(EventBusMessage::Unsubscribe { id })
-            .map_err(|e| {
-                tracing::error!("Send error: {e:}");
-                EventBusError::ChannelSendError
-            })?;
-        Ok(())
     }
 
     #[instrument]
@@ -345,6 +295,86 @@ impl<T: Send + Clone> EventHandle<T> {
     pub fn id(&self) -> SubId {
         self.id
     }
+}
+
+/// Provides a publisher handle to the [`EventBus`] actor
+#[derive(Clone)]
+pub struct PubHandle<T: Send + Clone> {
+    tx: flume::Sender<EventBusMessage<T>>,
+}
+
+impl<T: Send + Clone> PubHandle<T> {
+    pub async fn publish_event(&self, event: T) -> Result<()> {
+        let (tx, rx) = flume::bounded(1);
+        self.tx
+            .send(EventBusMessage::PushEvent { event, reply: tx })
+            .map_err(|e| {
+                tracing::error!("Send error: {e:}");
+                EventBusError::ChannelSendError
+            })?;
+
+        rx.recv_async().await?
+    }
+}
+
+impl<T: Send + Clone> std::fmt::Debug for PubHandle<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PubHandle").field("tx", &self.tx).finish()
+    }
+}
+
+/// Provides the handle to the [`EventBus`] actor
+#[derive(Clone)]
+pub struct EventBusHandle<T: Send + Clone> {
+    tx: flume::Sender<EventBusMessage<T>>,
+    id: SubId,
+}
+
+impl<T: Send + Clone> std::fmt::Debug for EventBusHandle<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventBusHandle")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
+impl<T: Send + Clone> EventBusHandle<T> {
+    pub async fn new_with_handle() -> Result<EventBusHandle<T>>
+    where
+        T: 'static,
+    {
+        let (tx, rx) = flume::unbounded();
+        let bus = EventBus::new(rx);
+
+        // This will run the bus actor as a detached task, when it drops out of scope
+        let _task = spawn!(bus.run(), Priority::High);
+        let handle = EventBusHandle { tx, id: NULL_SUBID };
+        Ok(handle)
+    }
+
+    pub async fn get_publisher(&self) -> PubHandle<T> {
+        let tx = self.tx.clone();
+        PubHandle { tx }
+    }
+
+    /// This method creates a SubHandle that is subscribed to events
+    /// when created
+    #[instrument]
+    pub async fn get_subscriber(&self) -> Result<SubHandle<T>> {
+        let (tx, rx) = flume::bounded(1);
+        self.tx
+            .send(EventBusMessage::Subscribe { reply: tx })
+            .map_err(|e| {
+                tracing::error!("Send error: {e:}");
+                EventBusError::ChannelSendError
+            })?;
+        let new_id = rx.recv_async().await??;
+
+        Ok(SubHandle {
+            id: new_id,
+            tx: self.tx.clone(),
+        })
+    }
 
     #[cfg(feature = "delay-delete")]
     pub async fn cleanup(&self) {
@@ -357,7 +387,7 @@ impl<T: Send + Clone> EventHandle<T> {
     }
 }
 
-impl<T: Send + Clone> Drop for EventHandle<T> {
+impl<T: Send + Clone> Drop for SubHandle<T> {
     #[instrument]
     fn drop(&mut self) {
         // handle with id 0 does not need to be unsubbed when dropped
@@ -378,7 +408,7 @@ impl<T: Send + Clone> Drop for EventHandle<T> {
 /// so was to not block the main runtime thread
 #[cfg(feature = "delay-delete")]
 #[instrument]
-pub async fn cleanup_task<T: Send + Clone>(handle: EventHandle<T>) {
+pub async fn cleanup_task<T: Send + Clone>(handle: EventBusHandle<T>) {
     use std::{thread, time::Duration};
     loop {
         tracing::trace!("Executing clean up logic on event bus");
@@ -388,30 +418,69 @@ pub async fn cleanup_task<T: Send + Clone>(handle: EventHandle<T>) {
     }
 }
 
-/// Provides wrapper around event poll loop, checking for an events that a handle is
-/// subscribed to, and breaking the loop when the event match condition is met. Optionally
-/// will send a notice when the loop is broken
+/// Provides wrapper around event poll loop, checking for an events
+/// that a handle is subscribed to, and breaking the loop when the
+/// event match condition is met. Optionally will send a notice when
+/// the loop is broken
 pub async fn event_poll_matcher<T: Send + Clone, S: Send>(
-    handle: &EventHandle<T>,
+    handle: &SubHandle<T>,
     matcher: impl Fn(&T) -> bool,
     notify: Option<(flume::Sender<S>, S)>,
 ) -> Result<()> {
+    let handler = |event: &Option<T>| {
+        if let Some(ev) = event {
+            if matcher(ev) {
+                return true;
+            }
+        }
+        false
+    };
+    // generic over the polling function used
+    poll_matcher(handle, SubHandle::poll, handler, notify).await
+}
+
+/// Provides the same wrapper as [`event_poll_matcher`] but
+/// using the handle API to call [`SubHandle::batch_poll`]
+/// instead of [`SubHandle::poll`]
+pub async fn event_batch_poll_matcher<T: Send + Clone, S: Send>(
+    handle: &SubHandle<T>,
+    matcher: impl Fn(&T) -> bool,
+    notify: Option<(flume::Sender<S>, S)>,
+) -> Result<()> {
+    let handler = |events: &Vec<T>| {
+        for ev in events {
+            if matcher(ev) {
+                return true;
+            }
+        }
+        false
+    };
+
+    poll_matcher(handle, SubHandle::batch_poll, handler, notify).await
+}
+
+/// Generic method for calling either the [`SubHandle::poll`] or
+/// [`SubHandle::batch_poll`] method
+pub async fn poll_matcher<'a, T: Send + Clone, S: Send, F, O>(
+    handle: &'a SubHandle<T>,
+    poll_fn: fn(&'a SubHandle<T>) -> F,
+    handler: impl Fn(&O) -> bool,
+    notify: Option<(flume::Sender<S>, S)>,
+) -> Result<()>
+where
+    F: futures_lite::Future<Output = Result<O>> + 'a,
+{
     let id = handle.id();
     tracing::debug!("event-consumer-{id:}: dropping into poll loop");
     loop {
-        let event = handle.poll().await;
-        match event {
-            Ok(Some(event)) => {
-                // on event match, exit poll loop
-                if matcher(&event) {
-                    break;
-                }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                tracing::error!("Error processing event bus poll {e:}, exiting");
+        let event = poll_fn(handle).await;
+        if let Ok(event) = event {
+            if handler(&event) {
                 break;
             }
+        } else {
+            tracing::error!("Error processing event bus poll, exiting");
+            break;
         }
     }
 

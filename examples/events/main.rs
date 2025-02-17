@@ -5,7 +5,7 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use imputio::{spawn, Executor, ImputioRuntime, Priority};
 
-use imputio_utils::event_bus::{event_poll_matcher, EventBus, EventHandle};
+use imputio_utils::event_bus::{event_poll_matcher, EventBusHandle, PubHandle, SubHandle};
 
 #[derive(Clone)]
 struct Packet<'a> {
@@ -21,13 +21,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
     ImputioRuntime::<Executor>::new().run();
 
-    let fut = async move {
-        event_bus_example().await?;
-        Ok(())
-    };
-
     let task: imputio::ImputioTaskHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>> =
-        spawn!(fut, Priority::High);
+        spawn!(event_bus_example(), Priority::High);
     task.receiver().recv()??;
 
     Ok(())
@@ -40,28 +35,26 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     let tx_1 = shutdown_tx.clone();
     let tx_2 = shutdown_tx.clone();
 
-    // creates a subscribed handle so events will enqueue onto the
-    // queue associated with this handle's ID as soon as handle
-    // is created. Use new_with_unsubscribed_handle for different behavior
-    let handle: &'static EventHandle<Packet<'_>> =
-        EventBus::<Packet<'_>>::new_with_handle().await?;
+    // creates a handle to the actor from which publisher
+    // or subscriber handles can be created
+    let handle = EventBusHandle::<Packet<'_>>::new_with_handle().await?;
 
-    // Show how to get new subscribed handled
-    let handle_one = handle.subscribe().await?;
+    // create a subscriber handle
+    let subscriber: SubHandle<Packet<'_>> = handle.get_subscriber().await?;
+    // create publisher handles
+    let publisher_one = handle.get_publisher().await;
+    let publisher_two = handle.get_publisher().await;
 
     // Simulate some events; make sure there are events on the bus
     // before blocking waiting for them, otherwise the events will
     // never get onto the bus (because currently single threaded)
-    simulate_packet_send_events(handle).await;
-
-    // Used to simulate additional, delayed packet send events on the event bus
-    let handle_two: &'static EventHandle<Packet<'_>> = Box::leak(Box::new(handle.clone()));
+    simulate_packet_send_events(&publisher_one).await;
 
     #[cfg(feature = "delay-delete")]
     {
         // if the example is compiled with the delay-delete feature flag, then
         // spawn a new thread to run the cleanup background task
-        let garbage_bus = handle.subscribe().await?;
+        let garbage_bus = handle.clone();
         std::thread::spawn(move || {
             let fut = async move {
                 imputio_utils::event_bus::cleanup_task(garbage_bus).await;
@@ -79,27 +72,27 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     let matcher_one = |event: &Packet| event.size == 0;
     let matcher_two = |event: &Packet| event._bytes == [0xbe, 0xef, 0xfa, 0xce];
 
-    event_poll_matcher(&handle_one, matcher_one, Some((tx_1, ())))
+    event_poll_matcher(&subscriber, matcher_one, Some((tx_1, ())))
         .await
         .ok();
-
-    // unsubscribe from the handle when returned from event poll loop
-    let id = handle_one.id();
-    if let Err(e) = handle_one.unsubscribe(id).await {
-        tracing::error!("EventBusError on unsubscribe: {e:}");
-    }
 
     // spawn a separate thread to simulate delayed packet send events
     std::thread::spawn(move || {
         let fut = async move {
-            sleep_and_send_more_events(handle_two).await;
+            sleep_and_send_more_events(&publisher_two).await;
         };
-        imputio::spawn_blocking!(fut, Priority::BestEffort);
+        imputio::spawn_blocking!(fut, Priority::Medium);
     });
 
-    event_poll_matcher(handle, matcher_two, Some((tx_2, ())))
+    event_poll_matcher(&subscriber, matcher_two, Some((tx_2, ())))
         .await
         .ok();
+
+    // unsubscribe from the handle when returned from event poll loop
+    let id = subscriber.id();
+    if let Err(e) = subscriber.unsubscribe(id).await {
+        tracing::error!("EventBusError on unsubscribe: {e:}");
+    }
 
     // expect two shut down notices from the event_poll_matcher methods
     // this will block from returning from main until received & processed
@@ -107,8 +100,7 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     shutdown_rx.recv().ok();
     shutdown_rx.recv().ok();
 
-    // dropping the handle will unsubscribe them the same as calling
-    // unsubscribe
+    // drop the event bus actor handle
     let _ = handle;
 
     Ok(())
@@ -117,16 +109,16 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
 /// Sends a few objects on the event bus, the last event will be used in a
 /// match function to exit the event polling loop a spawned task is
 /// executing
-async fn simulate_packet_send_events(handle: &EventHandle<Packet<'_>>) {
+async fn simulate_packet_send_events(handle: &PubHandle<Packet<'_>>) {
     handle
-        .push_event(Packet {
+        .publish_event(Packet {
             _bytes: &[0xb0, 0x00, 0x00],
             size: 3,
         })
         .await
         .ok();
     handle
-        .push_event(Packet {
+        .publish_event(Packet {
             _bytes: &[0xb0, 0x00, 0x00, 0xee, 0xee, 0xff],
             size: 6,
         })
@@ -134,7 +126,7 @@ async fn simulate_packet_send_events(handle: &EventHandle<Packet<'_>>) {
         .ok();
 
     handle
-        .push_event(Packet {
+        .publish_event(Packet {
             _bytes: &[],
             size: 0,
         })
@@ -145,11 +137,11 @@ async fn simulate_packet_send_events(handle: &EventHandle<Packet<'_>>) {
 /// Sleeps and then sends a few objects on the event bus, one object is
 /// known to provide a match for a match function that will be used to exit
 /// the event polling loop a spawned task is executing
-async fn sleep_and_send_more_events(handle: &'static EventHandle<Packet<'_>>) {
+async fn sleep_and_send_more_events(handle: &PubHandle<Packet<'_>>) {
     std::thread::sleep(std::time::Duration::from_secs(5));
     tracing::info!("Waking up and publishing events...");
     handle
-        .push_event(Packet {
+        .publish_event(Packet {
             _bytes: &[0xb0, 0x00, 0x00],
             size: 3,
         })
@@ -157,7 +149,7 @@ async fn sleep_and_send_more_events(handle: &'static EventHandle<Packet<'_>>) {
         .ok();
 
     handle
-        .push_event(Packet {
+        .publish_event(Packet {
             _bytes: &[0x00],
             size: 1,
         })
@@ -165,7 +157,7 @@ async fn sleep_and_send_more_events(handle: &'static EventHandle<Packet<'_>>) {
         .ok();
 
     handle
-        .push_event(Packet {
+        .publish_event(Packet {
             _bytes: &[0xbe, 0xef, 0xfa, 0xce],
             size: 4,
         })
