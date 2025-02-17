@@ -22,10 +22,6 @@ name = "events"
 path = "./events/main.rs"
 
 [[example]]
-name = "simple"
-path = "./simple/main.rs"
-
-[[example]]
 name = "block_on"
 path = "./block_on/main.rs"
 

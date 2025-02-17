@@ -46,13 +46,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     ImputioRuntime::<Executor>::new().block_on(async move {
-        let one = ExampleTask::new(2);
-        let two = ExampleTask::new(10);
-        let result = one.await;
-        tracing::info!("Result one: {result:}");
-        let result = two.await;
-        tracing::info!("Result two: {result:}");
+        block_on_example().await;
     });
 
     Ok(())
+}
+
+async fn block_on_example() {
+    let one = ExampleTask::new(2);
+    let two = ExampleTask::new(10);
+    let result = one.await;
+    tracing::info!("Result one: {result:}");
+    let result = two.await;
+    tracing::info!("Result two: {result:}");
 }
