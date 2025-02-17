@@ -13,14 +13,14 @@ use std::{
     thread,
     time::Duration,
 };
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use imputio::{spawn_blocking, Executor, ImputioRuntime, ImputioTask, Priority};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(tracing::Level::TRACE)
-        .finish();
+    .with_env_filter(EnvFilter::from_default_env())
+    .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 

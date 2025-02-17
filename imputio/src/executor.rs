@@ -2,7 +2,6 @@ use std::{
     collections::VecDeque,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
 };
 
 use crate::{
@@ -89,9 +88,8 @@ where
     T: Send + 'static,
 {
     let mut exec = crate::EXECUTOR
-        .get_or_init(|| Arc::new(Mutex::new(Box::new(Executor::initialize()))))
         .lock()
-        .unwrap_or_else(|_| panic!("panic"));
+        .unwrap_or_else(|_| panic!("Unable to obtain executor lock for spawn"));
     exec.spawn(fut, priority)
 }
 
@@ -101,8 +99,7 @@ where
     T: Send + 'static,
 {
     let mut exec = crate::EXECUTOR
-        .get_or_init(|| Arc::new(Mutex::new(Box::new(Executor::initialize()))))
         .lock()
-        .unwrap_or_else(|_| panic!("panic"));
+        .unwrap_or_else(|_| panic!("Unable to obtain executor lock for spawn_blocking"));
     exec.spawn_blocking(fut, priority)
 }

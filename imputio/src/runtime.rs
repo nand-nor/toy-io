@@ -3,7 +3,6 @@ use std::{
     future::Future,
     marker::PhantomData,
     num::NonZero,
-    sync::{Arc, Mutex},
     thread::{self, JoinHandle, ThreadId},
 };
 
@@ -72,15 +71,15 @@ impl ImputioRuntime<Executor> {
 
         let handle = std::thread::spawn(move || loop {
             let mut exec = crate::EXECUTOR
-                .get_or_init(|| Arc::new(Mutex::new(Box::new(Executor::initialize()))))
                 .lock()
-                .unwrap_or_else(|_| panic!("panic"));
+                .unwrap_or_else(|_| panic!("Unable to obtain executor lock in runtime exec loop"));
 
             exec.poll();
             if let Ok(()) = rx.try_recv() {
                 tracing::debug!("Shutdown notice received");
                 break;
             }
+            drop(exec);
         });
 
         self.exec_thread_handle = Some(handle);
@@ -200,14 +199,18 @@ mod tests {
             let ex = ExampleTask {
                 count: EXPECTED_EX_RET,
             };
-            let t_ex = spawn_blocking!(ex, Priority::High);
 
-            let async_fn_task = spawn!(async { async_fn().await }, Priority::Medium);
-            let async_fn_res = async_fn_task.receiver().recv();
+            // Spawning a blocking task within the context of 
+            // the runtime's block_on method requires a new 
+            // thread to be spawned
+            std::thread::spawn( move || {
+                let t_ex = spawn_blocking!(ex, Priority::High);
+                assert_eq!(t_ex, EXPECTED_EX_RET + 1);
+            });
 
-            assert_eq!(async_fn_res, Ok(EXPECTED_ASYNC_RET));
+            let async_fn_res =  async_fn().await;
+            assert_eq!(async_fn_res, EXPECTED_ASYNC_RET);
 
-            assert_eq!(t_ex, EXPECTED_EX_RET + 1);
         });
     }
 
