@@ -39,6 +39,20 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     // or subscriber handles can be created
     let handle = EventBusHandle::<Packet<'_>>::new_with_handle().await?;
 
+    #[cfg(feature = "delay-delete")]
+    {
+        // if the example is compiled with the delay-delete feature flag, then
+        // spawn a new thread to run the cleanup background task
+        let garbage_bus = handle.clone();
+        std::thread::spawn(move || {
+            // spawn it at medium priority
+            imputio::spawn_blocking!(
+                imputio_utils::event_bus::cleanup_task(garbage_bus),
+                Priority::Medium
+            );
+        });
+    }
+
     // create a subscriber handle
     let subscriber: SubHandle<Packet<'_>> = handle.get_subscriber().await?;
     // create publisher handles
@@ -50,19 +64,13 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     // never get onto the bus (because currently single threaded)
     simulate_packet_send_events(&publisher_one).await;
 
-    #[cfg(feature = "delay-delete")]
-    {
-        // if the example is compiled with the delay-delete feature flag, then
-        // spawn a new thread to run the cleanup background task
-        let garbage_bus = handle.clone();
-        std::thread::spawn(move || {
-            let fut = async move {
-                imputio_utils::event_bus::cleanup_task(garbage_bus).await;
-            };
-            // spawn it at best effort priority
-            imputio::spawn_blocking!(fut, Priority::BestEffort);
-        });
-    }
+    // spawn a separate thread to simulate delayed packet send events
+    std::thread::spawn(move || {
+        let fut = async move {
+            sleep_and_send_more_events(&publisher_two).await;
+        };
+        imputio::spawn_blocking!(fut, Priority::Medium);
+    });
 
     // These matcher function examples are what will be used to trigger
     // exiting the poll loop that the spawned task drops into as part of
@@ -76,23 +84,9 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
         .await
         .ok();
 
-    // spawn a separate thread to simulate delayed packet send events
-    std::thread::spawn(move || {
-        let fut = async move {
-            sleep_and_send_more_events(&publisher_two).await;
-        };
-        imputio::spawn_blocking!(fut, Priority::Medium);
-    });
-
     event_poll_matcher(&subscriber, matcher_two, Some((tx_2, ())))
         .await
         .ok();
-
-    // unsubscribe from the handle when returned from event poll loop
-    let id = subscriber.id();
-    if let Err(e) = subscriber.unsubscribe(id).await {
-        tracing::error!("EventBusError on unsubscribe: {e:}");
-    }
 
     // expect two shut down notices from the event_poll_matcher methods
     // this will block from returning from main until received & processed
@@ -100,7 +94,19 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     shutdown_rx.recv().ok();
     shutdown_rx.recv().ok();
 
-    // drop the event bus actor handle
+    // unsubscribe from the handle when returned from event poll loop
+    let id = subscriber.id();
+    tracing::info!("Calling unsubscribe for subscriber id {id:}");
+    if let Err(e) = subscriber.unsubscribe(id).await {
+        tracing::error!("EventBusError on unsubscribe: {e:}");
+    }
+
+    // uncomment to see cleanup task remove unsubb'ed task queue
+    //loop {
+    //    std::thread::yield_now()
+    //}
+
+    // drop the handle to exit from the actor thread
     let _ = handle;
 
     Ok(())

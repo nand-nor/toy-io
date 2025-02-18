@@ -12,7 +12,7 @@ mod task;
 #[macro_use]
 pub mod macros;
 
-pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, Executor};
+pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, Executor, system_spawn_blocking};
 pub use runtime::{ImputioRuntime, RuntimeScheduler};
 pub use task::{ImputioTask, ImputioTaskHandle};
 

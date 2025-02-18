@@ -41,25 +41,6 @@ impl ImputioWaker {
         drop(raw_waker);
     }
 
-    #[allow(unused)]
-    pub fn new_raw_waker() -> RawWaker {
-        let inner = ImputioTaskHeader::default();
-        let inner = Box::into_raw(Box::new(inner));
-        RawWaker::new(inner as *const (), &Self::VTABLE)
-    }
-
-    #[allow(unused)]
-    pub fn new_waker() -> Waker {
-        unsafe { Waker::from_raw(Self::new_raw_waker()) }
-    }
-
-    #[allow(unused)]
-    pub fn clone_inner(raw_waker: *const ()) -> *const ImputioTaskHeader {
-        let cloned_waker = unsafe { Arc::from_raw(raw_waker as *mut ImputioTaskHeader) };
-        std::mem::forget(cloned_waker.clone());
-        Arc::into_raw(cloned_waker)
-    }
-
     pub fn unpark(inner: &ImputioTaskHeader) {
         inner
             .parked
@@ -73,14 +54,13 @@ impl ImputioWaker {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    pub fn new_with_inner_ptr() -> (Arc<Waker>, *const ImputioTaskHeader) {
+    pub fn new_waker() -> Waker {
         let inner = ImputioTaskHeader::default();
-
         let inner = Arc::new(inner);
         let inner_clone = Arc::into_raw(inner.clone());
 
         let raw_waker = RawWaker::new(inner_clone as *const _, &ImputioWaker::VTABLE);
-        let waker = Arc::new(unsafe { Waker::from_raw(raw_waker) });
-        (waker, Arc::into_raw(inner))
+        // FIXME: Safety docs
+        unsafe { Waker::from_raw(raw_waker) }
     }
 }
