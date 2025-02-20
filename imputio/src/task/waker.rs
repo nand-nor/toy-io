@@ -63,4 +63,11 @@ impl ImputioWaker {
         // FIXME: Safety docs
         unsafe { Waker::from_raw(raw_waker) }
     }
+
+    pub fn new_waker_inner_ptr() -> (Waker, *const ImputioTaskHeader) {
+        (
+            Self::new_waker(),
+            Arc::into_raw(Arc::new(ImputioTaskHeader::default())),
+        )
+    }
 }
