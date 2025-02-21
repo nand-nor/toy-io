@@ -382,7 +382,7 @@ impl<T: Send + Clone> EventBusHandle<T> {
     }
 
     #[cfg(feature = "delay-delete")]
-    pub async fn cleanup(&self) {
+    pub fn cleanup(&self) {
         self.tx
             .send(EventBusMessage::CleanUpBgTask)
             .map_err(|e| {
@@ -413,14 +413,19 @@ impl<T: Send + Clone> Drop for SubHandle<T> {
 /// so was to not block the main runtime thread
 #[cfg(feature = "delay-delete")]
 #[instrument]
-pub async fn cleanup_task<T: Send + Clone>(handle: EventBusHandle<T>) {
+pub fn cleanup_task<T: Send + Clone + 'static>(handle: EventBusHandle<T>) {
     use std::{thread, time::Duration};
-    loop {
+    let handle: &'static EventBusHandle<T> = Box::leak(Box::new(handle));
+    std::thread::spawn(move || loop {
         tracing::trace!("Executing clean up logic on event bus");
-        handle.cleanup().await;
-        thread::yield_now();
-        thread::park_timeout(Duration::from_secs(5));
-    }
+        let handle_c = handle.clone();
+        let handle = std::thread::spawn(move || {
+            handle_c.cleanup();
+            thread::yield_now();
+            thread::park_timeout(Duration::from_secs(5));
+        });
+        handle.join().ok();
+    });
 }
 
 /// Provides wrapper around event poll loop, checking for an events

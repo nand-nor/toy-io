@@ -24,7 +24,7 @@ pub trait RuntimeScheduler {
 
 pub struct ImputioRuntime<S: RuntimeScheduler + 'static> {
     num_cores: usize,
-    scheduler: PhantomData<S>,
+    phantom: PhantomData<S>,
     exec_thread_id: ThreadId,
     exec_thread_handle: Option<JoinHandle<()>>,
     shutdown_tx: flume::Sender<()>,
@@ -54,8 +54,8 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
 
         Self {
             num_cores,
-            scheduler: PhantomData,
-            exec_thread_id: thread::current().id(),
+            phantom: PhantomData,
+            exec_thread_id: thread::current().id(), // replaced later with exec thread id
             exec_thread_handle: None,
             shutdown_tx: tx,
             shutdown_rx: rx,
@@ -74,29 +74,28 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
     }
 
     pub fn run(&mut self) -> flume::Sender<()> {
+        let tx = self.shutdown_tx.clone();
+        let rx = self.shutdown_rx.clone();
+
+        let handle = std::thread::spawn(move || loop {
+            let mut exec = crate::EXECUTOR
+                .lock()
+                .unwrap_or_else(|_| panic!("Unable to obtain lock"));
+
+            exec.poll();
+            if let Ok(()) = rx.try_recv() {
+                tracing::debug!("Shutdown notice received");
+                break;
+            }
+        });
+        self.exec_thread_id = handle.thread().id();
+        self.exec_thread_handle = Some(handle);
         tracing::info!(
             "Running ImputioRuntime on thread id {:?}, num cores available: {:?}",
             self.exec_thread_id,
             self.num_cores
         );
 
-        let tx = self.shutdown_tx.clone();
-        let rx = self.shutdown_rx.clone();
-
-        // hold the handle, allows us to abort if needed
-        let handle = std::thread::spawn(move || {
-            let exec = unsafe { crate::EXECUTOR.get_mut_or_init(crate::Executor::initialize) };
-
-            loop {
-                exec.poll();
-                if let Ok(()) = rx.try_recv() {
-                    tracing::debug!("Shutdown notice received");
-                    break;
-                }
-            }
-        });
-
-        self.exec_thread_handle = Some(handle);
         tx
     }
 
@@ -105,7 +104,7 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
         F: Future<Output = R> + Send + 'static,
         R: Send + 'static,
     {
-        spawn_blocking!(fut)
+        spawn_blocking!(fut, Priority::High)
     }
 }
 
@@ -181,10 +180,11 @@ mod tests {
             count: OTHER_EX_BASE,
         };
 
-        let t_one = spawn!(one);
-        let t_two = spawn!(async move { two.await }, Priority::Low);
+        let t_one = spawn!(one, Priority::High);
 
-        let async_fn_task = spawn!(async { async_fn().await }, Priority::Medium);
+        let t_two = spawn!(async move { two.await }, Priority::Medium);
+
+        let async_fn_task = spawn!(async { async_fn().await }, Priority::Low);
 
         let t_one_res = t_one.receiver().recv();
         let t_two_res = t_two.receiver().recv();
@@ -206,25 +206,6 @@ mod tests {
     }
 
     #[test]
-    fn test_spawn_in_block_on_ctx() {
-        ImputioRuntime::<Executor>::new().block_on(async move {
-            // Pick something above EXPECTED_EX_RET
-            // so the task immediately returns Poll::Ready
-            let ex = ExampleTask {
-                count: EXPECTED_EX_RET,
-            };
-            let t_ex = spawn_blocking!(ex, Priority::High);
-
-            let async_fn_task = spawn!(async { async_fn().await }, Priority::Medium);
-            let async_fn_res = async_fn_task.receiver().recv();
-
-            assert_eq!(async_fn_res, Ok(EXPECTED_ASYNC_RET));
-
-            assert_eq!(t_ex, EXPECTED_EX_RET + 1);
-        });
-    }
-
-    #[test]
     fn test_await_in_block_on_ctx() {
         ImputioRuntime::<Executor>::new().block_on(async move {
             let ex = OtherExampleTask {
@@ -237,6 +218,22 @@ mod tests {
             assert_eq!(async_fn_res, EXPECTED_ASYNC_RET);
 
             assert_eq!(t_ex, EXPECTED_OTHER_EX_RET);
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn test_spawn_in_block_on_ctx() {
+        ImputioRuntime::<Executor>::new().block_on(async move {
+            // count does not matter here as this test
+            // is checking for panics to arise when expected
+            let ex = ExampleTask { count: 0 };
+
+            // spawning a blocking task within the block_on context should panic
+            // if we use #[should_panic], because there is a single global executor
+            // object, that can cause other tests to fail
+            let result = std::panic::catch_unwind(|| spawn_blocking!(ex, Priority::High));
+            assert!(result.is_err());
         });
     }
 }

@@ -38,21 +38,13 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     // creates a handle to the actor from which publisher
     // or subscriber handles can be created
     let handle = EventBusHandle::<Packet<'_>>::new_with_handle().await?;
-
     #[cfg(feature = "delay-delete")]
     {
         // if the example is compiled with the delay-delete feature flag, then
         // spawn a new thread to run the cleanup background task
         let garbage_bus = handle.clone();
-        std::thread::spawn(move || {
-            // spawn it at medium priority
-            imputio::spawn_blocking!(
-                imputio_utils::event_bus::cleanup_task(garbage_bus),
-                Priority::Medium
-            );
-        });
+        std::thread::spawn(move || imputio_utils::event_bus::cleanup_task(garbage_bus));
     }
-
     // create a subscriber handle
     let subscriber: SubHandle<Packet<'_>> = handle.get_subscriber().await?;
     // create publisher handles
@@ -69,7 +61,8 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
         let fut = async move {
             sleep_and_send_more_events(&publisher_two).await;
         };
-        imputio::spawn_blocking!(fut, Priority::Medium);
+        let task = imputio::spawn!(fut, Priority::High);
+        task.spawn_await().ok();
     });
 
     // These matcher function examples are what will be used to trigger
@@ -100,11 +93,6 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
     if let Err(e) = subscriber.unsubscribe(id).await {
         tracing::error!("EventBusError on unsubscribe: {e:}");
     }
-
-    // uncomment to see cleanup task remove unsubb'ed task queue
-    //loop {
-    //    std::thread::yield_now()
-    //}
 
     // drop the handle to exit from the actor thread
     let _ = handle;
