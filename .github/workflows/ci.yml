@@ -23,7 +23,8 @@ jobs:
 
       - name: compile & run check
         run: |
-          cargo run --example server
+          cargo run --example simple-server
+          cargo run --example block_on
 
   test:
     name: Tests

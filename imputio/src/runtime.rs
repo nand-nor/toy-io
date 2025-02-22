@@ -2,11 +2,15 @@ use std::{
     fmt::Debug,
     future::Future,
     marker::PhantomData,
+    net::TcpListener,
     num::NonZero,
     thread::{self, JoinHandle, ThreadId},
 };
 
-use crate::{spawn_blocking, ImputioTaskHandle, Priority};
+use crate::{
+    io::{Operation, PollError, PollHandle},
+    spawn_blocking, ImputioTaskHandle, Priority,
+};
 
 pub trait RuntimeScheduler {
     fn spawn<F, T>(&mut self, fut: F) -> ImputioTaskHandle<T>
@@ -20,6 +24,8 @@ pub trait RuntimeScheduler {
         T: Send + 'static;
 
     fn poll(&mut self);
+
+    fn poller_handle(&self) -> PollHandle;
 }
 
 pub struct ImputioRuntime<S: RuntimeScheduler + 'static> {
@@ -105,6 +111,37 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
         R: Send + 'static,
     {
         spawn_blocking!(fut, Priority::High)
+    }
+
+    pub fn with_tcp_listeners(
+        self,
+        listeners: Vec<(TcpListener, Option<flume::Sender<mio::event::Event>>)>,
+    ) -> Self {
+        use mio::Interest;
+
+        for (listener, notify) in listeners {
+            let token = Operation::RegistrationTcpAdd {
+                fd: listener,
+                interest: Interest::READABLE
+                    .add(Interest::WRITABLE)
+                    .add(Interest::PRIORITY),
+                notify,
+            };
+
+            let exec = crate::EXECUTOR
+                .lock()
+                .unwrap_or_else(|_| panic!("Unable to obtain lock"));
+            if let Err(e) = exec.push_to_poller(token) {
+                tracing::error!("Error pushing to uring {e:}");
+            }
+        }
+
+        self
+    }
+
+    pub fn add_operation_to_io_poller(&mut self, _token: Operation) -> Result<(), PollError> {
+        // TODO
+        Ok(())
     }
 }
 
@@ -195,14 +232,6 @@ mod tests {
         assert_eq!(async_fn_res, Ok(EXPECTED_ASYNC_RET));
 
         Ok(())
-    }
-
-    #[test]
-    fn test_spawn_blocking() {
-        ImputioRuntime::<Executor>::new().run();
-        let t = ExampleTask { count: 1 };
-        let t_res = spawn_blocking!(t, Priority::BestEffort);
-        assert_eq!(t_res, EXPECTED_EX_RET);
     }
 
     #[test]

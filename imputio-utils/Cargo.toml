@@ -10,6 +10,5 @@ tracing.workspace=true
 thiserror.workspace=true
 imputio.workspace=true
 
-
 [features]
 delay-delete=[]
