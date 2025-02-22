@@ -2,6 +2,7 @@
 //! intended for educational purposes
 
 mod executor;
+mod io;
 mod runtime;
 mod task;
 #[macro_use]
@@ -16,6 +17,16 @@ use std::sync::{LazyLock, Mutex};
 // FIXME can we make this lockless / wait free while also being global?
 pub static EXECUTOR: LazyLock<Mutex<Executor>> =
     LazyLock::new(|| Mutex::new(Executor::initialize()));
+
+/// Main entry point for running futures within an imputio runtime
+/// without configuring the runtime with additional params
+pub fn rt_entry<F, R>(fut: F) -> R
+where
+    F: std::future::Future<Output = R> + Send + 'static,
+    R: Send + 'static,
+{
+    ImputioRuntime::<Executor>::new().block_on(fut)
+}
 
 /// Priority is used to enqueue tasks onto priority queues
 /// note that idx 0 is reserved for system priority work

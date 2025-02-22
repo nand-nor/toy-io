@@ -9,15 +9,19 @@ use std::{
 use rand::{self, Rng};
 
 use crate::{
+    io::{Operation, PollCfg, PollError, PollHandle},
     runtime::RuntimeScheduler,
     task::{ImputioTask, ImputioTaskHandle},
     Priority,
 };
 
 /// Simple "priority" executor with higher priority
-/// queues dequeuing tasks first
+/// queues dequeuing tasks first. Simple io operations
+/// can be separately handled by submitting registration
+/// requests to the epoll-backed [`PollHandle`] object
 pub struct Executor {
     tasks: [VecDeque<crate::task::ImputioTask>; 5],
+    poll_handle: PollHandle,
 }
 
 unsafe impl Sync for Executor {}
@@ -49,11 +53,21 @@ impl crate::RuntimeScheduler for Executor {
     {
         Executor::spawn(self, fut, priority)
     }
+
+    fn poller_handle(&self) -> PollHandle {
+        Executor::poll_handle(self)
+    }
 }
 
 impl Executor {
     pub(crate) fn initialize() -> Self {
+        tracing::info!("Launching poller thread");
+
+        // FIXME: allow runtime with build options to specify size of poll cfg event queue
+        let (actor, handle) = PollHandle::initialize(Some(PollCfg::default()));
+        std::thread::spawn(move || actor.run());
         Self {
+            poll_handle: handle,
             tasks: [(); 5].map(|_| VecDeque::new()),
         }
     }
@@ -113,10 +127,25 @@ impl Executor {
                 }
             };
         }
+
+        if let Err(e) = self.poll_handle.poll() {
+            tracing::error!("Error polling io poller {e:}");
+        } else {
+            self.poll_handle.process().ok();
+        }
+    }
+
+    pub fn push_to_poller(&self, token: Operation) -> Result<(), PollError> {
+        self.poll_handle.submit_op(token)?;
+        Ok(())
+    }
+
+    fn poll_handle(&self) -> PollHandle {
+        self.poll_handle.clone()
     }
 }
 
-pub fn imputio_spawn<F, T>(fut: F, priority: crate::Priority) -> crate::ImputioTaskHandle<T>
+pub fn imputio_spawn<F, T>(fut: F, priority: crate::Priority) -> ImputioTaskHandle<T>
 where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,

@@ -15,7 +15,7 @@ use std::{
 };
 use tracing_subscriber::FmtSubscriber;
 
-use imputio::{spawn_blocking, Executor, ImputioRuntime, ImputioTask, Priority};
+use imputio::{rt_entry, ImputioTask};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = FmtSubscriber::builder()
@@ -24,8 +24,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    ImputioRuntime::<Executor>::new().run();
+    rt_entry(async move { server_example().await });
 
+    Ok(())
+}
+
+async fn server_example() {
     let (server_future, mut stream) = ServerFuture::new().unwrap();
 
     let mut client_poll: mio::Poll = mio::Poll::new().unwrap();
@@ -46,12 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::thread::sleep(std::time::Duration::from_secs(1));
 
-    let server_fut_result = spawn_blocking!(server_future, Priority::High);
+    let server_fut_result = server_future.await;
 
     let server_fut_result = String::from_utf8_lossy(&server_fut_result);
     tracing::info!("Server future result returned: {server_fut_result:}");
-
-    Ok(())
 }
 
 pub const SERVER: Token = Token(0);
