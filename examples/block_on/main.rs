@@ -5,7 +5,7 @@ use std::{
 };
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-use imputio::{Executor, ImputioRuntime};
+use imputio::ImputioRuntime;
 
 #[derive(Debug)]
 pub struct ExampleTask {
@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    ImputioRuntime::<Executor>::new().block_on(async move {
+    ImputioRuntime::new().block_on(async move {
         block_on_example().await;
     });
 

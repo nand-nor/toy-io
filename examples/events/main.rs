@@ -3,7 +3,7 @@
 
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-use imputio::{spawn, Executor, ImputioRuntime, Priority};
+use imputio::{spawn, ImputioRuntime, Priority};
 
 use imputio_utils::event_bus::{event_poll_matcher, EventBusHandle, PubHandle, SubHandle};
 
@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-    ImputioRuntime::<Executor>::new().run();
+    ImputioRuntime::new().run();
 
     let task: imputio::ImputioTaskHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>> =
         spawn!(event_bus_example(), Priority::High);

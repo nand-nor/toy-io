@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use flume::TryRecvError;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-use imputio::{Executor, ImputioRuntime};
+use imputio::ImputioRuntime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = FmtSubscriber::builder()
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen_clone = listener.try_clone()?;
 
     let rx = shutdown_rx.clone();
-    let mut rt = ImputioRuntime::<Executor>::new()
+    let mut rt = ImputioRuntime::new()
         .with_tcp_listeners(vec![(listener, Some(notify_tx))])
         .with_shutdown_notifier(shutdown_tx, rx);
     rt.run();

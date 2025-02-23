@@ -1,49 +1,54 @@
 use std::{
     fmt::Debug,
     future::Future,
-    marker::PhantomData,
     net::TcpListener,
     num::NonZero,
-    thread::{self, JoinHandle, ThreadId},
+    thread::{self, ThreadId},
 };
 
 use crate::{
-    io::{Operation, PollError, PollHandle},
+    executor::handle::ExecError,
+    io::{Operation, PollHandle},
     spawn_blocking, ImputioTaskHandle, Priority,
 };
 
 pub trait RuntimeScheduler {
-    fn spawn<F, T>(&mut self, fut: F) -> ImputioTaskHandle<T>
+    fn spawn<F, T>(&self, fut: F) -> ImputioTaskHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static;
 
-    fn priority_spawn<F, T>(&mut self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
+    fn priority_spawn<F, T>(&self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static;
 
-    fn poll(&mut self);
+    fn poll(&self);
 
     fn poller_handle(&self) -> PollHandle;
 }
 
-pub struct ImputioRuntime<S: RuntimeScheduler + 'static> {
+use derive_builder::Builder;
+
+#[derive(Builder)]
+#[builder(setter(into))]
+pub struct ImputioRuntime {
     num_cores: usize,
-    phantom: PhantomData<S>,
     exec_thread_id: ThreadId,
-    exec_thread_handle: Option<JoinHandle<()>>,
     shutdown_tx: flume::Sender<()>,
     shutdown_rx: flume::Receiver<()>,
 }
 
-impl<S: RuntimeScheduler + 'static> Default for ImputioRuntime<S> {
+impl Default for ImputioRuntime {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: RuntimeScheduler + 'static> Debug for ImputioRuntime<S> {
+// TODO
+impl ImputioRuntimeBuilder {}
+
+impl Debug for ImputioRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImputioRuntime")
             .field("exec_thread_id", &self.exec_thread_id)
@@ -51,7 +56,7 @@ impl<S: RuntimeScheduler + 'static> Debug for ImputioRuntime<S> {
     }
 }
 
-impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
+impl ImputioRuntime {
     pub fn new() -> Self {
         let num_cores = thread::available_parallelism()
             .unwrap_or(NonZero::new(1usize).unwrap())
@@ -60,9 +65,7 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
 
         Self {
             num_cores,
-            phantom: PhantomData,
             exec_thread_id: thread::current().id(), // replaced later with exec thread id
-            exec_thread_handle: None,
             shutdown_tx: tx,
             shutdown_rx: rx,
         }
@@ -84,18 +87,13 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
         let rx = self.shutdown_rx.clone();
 
         let handle = std::thread::spawn(move || loop {
-            let mut exec = crate::EXECUTOR
-                .lock()
-                .unwrap_or_else(|_| panic!("Unable to obtain lock"));
-
-            exec.poll();
+            crate::EXECUTOR.poll();
             if let Ok(()) = rx.try_recv() {
                 tracing::debug!("Shutdown notice received");
                 break;
             }
         });
         self.exec_thread_id = handle.thread().id();
-        self.exec_thread_handle = Some(handle);
         tracing::info!(
             "Running ImputioRuntime on thread id {:?}, num cores available: {:?}",
             self.exec_thread_id,
@@ -128,19 +126,17 @@ impl<S: RuntimeScheduler + 'static> ImputioRuntime<S> {
                 notify,
             };
 
-            let exec = crate::EXECUTOR
-                .lock()
-                .unwrap_or_else(|_| panic!("Unable to obtain lock"));
-            if let Err(e) = exec.push_to_poller(token) {
-                tracing::error!("Error pushing to uring {e:}");
+            let poller = crate::EXECUTOR.get_io_poll_handler();
+            if let Err(e) = poller.submit_op(token) {
+                tracing::error!("Error pushing to io poller {e:}");
             }
         }
 
         self
     }
 
-    pub fn add_operation_to_io_poller(&mut self, _token: Operation) -> Result<(), PollError> {
-        // TODO
+    pub fn add_operation_to_io_poller(&mut self, op: Operation) -> Result<(), ExecError> {
+        crate::EXECUTOR.submit_io_op(op)?;
         Ok(())
     }
 }
@@ -154,7 +150,7 @@ mod tests {
         task::{Context, Poll},
     };
 
-    use crate::{spawn, spawn_blocking, Executor, Priority};
+    use crate::{spawn, spawn_blocking, Priority};
 
     /// Returns Poll::Pending until
     /// internal count reaches 5
@@ -209,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_spawn_simple() -> Result<(), Box<dyn std::error::Error>> {
-        ImputioRuntime::<Executor>::new().run();
+        ImputioRuntime::new().run();
         // can be any value but choosing something below EXPECTED_EX_RET
         // so the task returns Poll::Pending a few times
         let one = ExampleTask { count: 2 };
@@ -236,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_await_in_block_on_ctx() {
-        ImputioRuntime::<Executor>::new().block_on(async move {
+        ImputioRuntime::new().block_on(async move {
             let ex = OtherExampleTask {
                 count: OTHER_EX_BASE,
             };
@@ -253,7 +249,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_spawn_in_block_on_ctx() {
-        ImputioRuntime::<Executor>::new().block_on(async move {
+        ImputioRuntime::new().block_on(async move {
             // count does not matter here as this test
             // is checking for panics to arise when expected
             let ex = ExampleTask { count: 0 };

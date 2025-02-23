@@ -8,15 +8,14 @@ mod task;
 #[macro_use]
 pub mod macros;
 
-pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, Executor};
+pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, ExecHandle};
 pub use runtime::{ImputioRuntime, RuntimeScheduler};
 pub use task::{ImputioTask, ImputioTaskHandle};
 
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
-// FIXME can we make this lockless / wait free while also being global?
-pub static EXECUTOR: LazyLock<Mutex<Executor>> =
-    LazyLock::new(|| Mutex::new(Executor::initialize()));
+// FIXME work this into builder pattern
+pub static EXECUTOR: LazyLock<ExecHandle> = LazyLock::new(|| ExecHandle::initialize(None));
 
 /// Main entry point for running futures within an imputio runtime
 /// without configuring the runtime with additional params
@@ -25,7 +24,7 @@ where
     F: std::future::Future<Output = R> + Send + 'static,
     R: Send + 'static,
 {
-    ImputioRuntime::<Executor>::new().block_on(fut)
+    ImputioRuntime::new().block_on(fut)
 }
 
 /// Priority is used to enqueue tasks onto priority queues
