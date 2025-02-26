@@ -41,10 +41,6 @@ impl crate::RuntimeScheduler for ExecHandle {
     {
         ExecHandle::spawn(self, fut, priority)
     }
-
-    fn poller_handle(&self) -> PollHandle {
-        ExecHandle::get_io_poll_handler(self)
-    }
 }
 
 type Result<T> = std::result::Result<T, ExecError>;
@@ -117,6 +113,7 @@ impl Executor {
         Ok(())
     }
 
+    #[allow(unused)]
     fn poll_handle(&self) -> PollHandle {
         self.poll_handle.clone()
     }
@@ -127,9 +124,6 @@ impl Executor {
             match event {
                 Transaction::Poll => self.poll(),
                 Transaction::Spawn { task } => self.spawn(task),
-                Transaction::GetPollHandle { reply } => {
-                    let _ = reply.send(self.poll_handle());
-                }
                 Transaction::SubmitIoOp { op, reply } => {
                     let _ = reply.send(self.push_to_poller(op));
                 }
@@ -143,9 +137,6 @@ pub enum Transaction {
         task: ImputioTask,
     },
     Poll,
-    GetPollHandle {
-        reply: Reply<PollHandle>,
-    },
     SubmitIoOp {
         op: Operation,
         reply: Reply<Result<()>>,
@@ -221,16 +212,5 @@ impl ExecHandle {
             .ok();
 
         rx.recv().expect("Unable to submit io op")
-    }
-
-    pub fn get_io_poll_handler(&self) -> PollHandle {
-        let (tx, rx) = flume::bounded(1);
-
-        self.tx
-            .send(Transaction::GetPollHandle { reply: tx })
-            .inspect_err(|e| tracing::error!("get io handle op failure {e:}"))
-            .ok();
-
-        rx.recv().expect("Unable to get io poller handle")
     }
 }

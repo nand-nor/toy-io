@@ -22,10 +22,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen_clone = listener.try_clone()?;
 
     let rx = shutdown_rx.clone();
-    let mut rt = ImputioRuntime::new()
-        .with_tcp_listeners(vec![(listener, Some(notify_tx))])
-        .with_shutdown_notifier(shutdown_tx, rx);
+    let mut rt = ImputioRuntime::builder()
+        .shutdown((shutdown_tx, rx))
+        .build()?;
     rt.run();
+
+    imputio::register_tcp_socket(listener, None, Some(notify_tx))?;
 
     loop {
         // block waiting for event to be returned from io poller

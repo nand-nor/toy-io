@@ -9,13 +9,17 @@ mod task;
 pub mod macros;
 
 pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, ExecHandle};
-pub use runtime::{ImputioRuntime, RuntimeScheduler};
+use io::Operation;
+pub use runtime::{ImputioRuntime, RuntimeError, RuntimeScheduler};
 pub use task::{ImputioTask, ImputioTaskHandle};
 
-use std::sync::LazyLock;
+// re-export mio dep's Interest and Event objects
+pub use mio::{event::Event, Interest};
+
+use std::{os::fd::RawFd, sync::LazyLock};
 
 // FIXME work this into builder pattern
-pub static EXECUTOR: LazyLock<ExecHandle> = LazyLock::new(|| ExecHandle::initialize(None));
+pub(crate) static EXECUTOR: LazyLock<ExecHandle> = LazyLock::new(|| ExecHandle::initialize(None));
 
 /// Main entry point for running futures within an imputio runtime
 /// without configuring the runtime with additional params
@@ -25,6 +29,64 @@ where
     R: Send + 'static,
 {
     ImputioRuntime::new().block_on(fut)
+}
+
+/// Provides public method for registering TCP socket without having a handle to the
+/// runtime object
+pub fn register_tcp_socket(
+    listener: std::net::TcpListener,
+    interest: Option<Interest>,
+    notifier: Option<flume::Sender<Event>>,
+) -> Result<(), RuntimeError> {
+    let interest = if let Some(i) = interest {
+        i
+    } else {
+        Interest::READABLE
+            .add(Interest::WRITABLE)
+            .add(Interest::PRIORITY)
+    };
+
+    let op = Operation::RegistrationTcpAdd {
+        fd: listener,
+        interest,
+        notify: notifier,
+    };
+
+    add_operation_to_io_poller(op)?;
+
+    Ok(())
+}
+
+/// Provides public method for registering general purpose file descriptor
+/// with the IO poller object, without having a handle to the runtime object
+pub fn register_fd(
+    fd: RawFd,
+    interest: Option<Interest>,
+    notifier: Option<flume::Sender<Event>>,
+) -> Result<(), RuntimeError> {
+    let interest = if let Some(i) = interest {
+        i
+    } else {
+        Interest::READABLE
+            .add(Interest::WRITABLE)
+            .add(Interest::PRIORITY)
+    };
+
+    let op = Operation::RegistrationFdAdd {
+        fd,
+        interest,
+        notify: notifier,
+    };
+
+    add_operation_to_io_poller(op)?;
+    Ok(())
+}
+
+/// Provides public method for registering general IO operation having a handle to the
+/// runtime object. Excepts runtime to be in running state
+pub fn add_operation_to_io_poller(op: Operation) -> Result<(), RuntimeError> {
+    crate::EXECUTOR.submit_io_op(op)?;
+    Ok(())
 }
 
 /// Priority is used to enqueue tasks onto priority queues

@@ -6,10 +6,11 @@ use std::{
     thread::{self, ThreadId},
 };
 
+use derive_builder::Builder;
+use thiserror::Error;
+
 use crate::{
-    executor::handle::ExecError,
-    io::{Operation, PollHandle},
-    spawn_blocking, ImputioTaskHandle, Priority,
+    executor::handle::ExecError, io::PollError, spawn_blocking, ImputioTaskHandle, Priority,
 };
 
 pub trait RuntimeScheduler {
@@ -24,19 +25,74 @@ pub trait RuntimeScheduler {
         T: Send + 'static;
 
     fn poll(&self);
-
-    fn poller_handle(&self) -> PollHandle;
 }
 
-use derive_builder::Builder;
+#[derive(Error, Debug)]
+pub enum RuntimeError {
+    #[error("Executor error {0}")]
+    ExecutorError(#[from] ExecError),
+    #[error("StdIo error")]
+    StdIo(#[from] std::io::Error),
+    #[error("Io Poller error")]
+    IoPoller(#[from] PollError),
+    #[error("Internal error {0}")]
+    Internal(String),
+}
 
-#[derive(Builder)]
-#[builder(setter(into))]
+#[derive(Builder, Clone)]
+#[builder(build_fn(name = "build_impl"))]
 pub struct ImputioRuntime {
+    // TODO: allow config to pin certain threads to cores
+    #[builder(default)]
     num_cores: usize,
+    // TODO: allow spawning multiple exec threads
+    #[builder(default = 1)]
+    _num_exec_threads: usize,
     exec_thread_id: ThreadId,
-    shutdown_tx: flume::Sender<()>,
-    shutdown_rx: flume::Receiver<()>,
+    shutdown: (flume::Sender<()>, flume::Receiver<()>),
+}
+
+impl ImputioRuntimeBuilder {
+    pub fn build(&mut self) -> Result<ImputioRuntime, RuntimeError> {
+        if self.shutdown.is_none() {
+            self.shutdown = Some(flume::bounded(1));
+        }
+
+        if self.num_cores.is_none() {
+            self.num_cores = Some(
+                thread::available_parallelism()
+                    .unwrap_or(NonZero::new(1usize).unwrap())
+                    .get(),
+            );
+        }
+
+        if self._num_exec_threads.is_none() {
+            self._num_exec_threads = Some(1usize);
+        }
+
+        if self.exec_thread_id.is_none() {
+            self.exec_thread_id = Some(thread::current().id());
+        }
+
+        let rt = self
+            .build_impl()
+            .map_err(|e| RuntimeError::Internal(format!("Invalid runtime builder args {e:}")))?;
+        Ok(rt)
+    }
+
+    pub fn with_tcp_socket(
+        self,
+        listener: TcpListener,
+        interest: Option<mio::Interest>,
+        notifier: Option<flume::Sender<mio::event::Event>>,
+    ) -> Self {
+        crate::register_tcp_socket(listener, interest, notifier)
+            .inspect_err(|e| {
+                tracing::error!("Failed to register TCP socket {e:}");
+            })
+            .ok();
+        self
+    }
 }
 
 impl Default for ImputioRuntime {
@@ -45,46 +101,45 @@ impl Default for ImputioRuntime {
     }
 }
 
-// TODO
-impl ImputioRuntimeBuilder {}
-
 impl Debug for ImputioRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImputioRuntime")
+            .field("num_cores", &self.num_cores)
+            .field("_num_exec_threads", &self._num_exec_threads)
             .field("exec_thread_id", &self.exec_thread_id)
+            .field("shutdown", &self.shutdown)
             .finish()
     }
 }
 
 impl ImputioRuntime {
-    pub fn new() -> Self {
-        let num_cores = thread::available_parallelism()
-            .unwrap_or(NonZero::new(1usize).unwrap())
-            .get();
-        let (tx, rx) = flume::unbounded();
+    pub fn builder() -> ImputioRuntimeBuilder {
+        ImputioRuntimeBuilder::default()
+    }
 
+    pub fn new() -> Self {
         Self {
-            num_cores,
+            num_cores: thread::available_parallelism()
+                .unwrap_or(NonZero::new(1usize).unwrap())
+                .get(),
+            _num_exec_threads: 1,
             exec_thread_id: thread::current().id(), // replaced later with exec thread id
-            shutdown_tx: tx,
-            shutdown_rx: rx,
+            shutdown: flume::bounded(1),
         }
     }
 
-    pub fn with_shutdown_notifier(
+    pub fn replace_shutdown_notifier(
         mut self,
         shutdown_tx: flume::Sender<()>,
         shutdown_rx: flume::Receiver<()>,
     ) -> Self {
-        self.shutdown_tx = shutdown_tx;
-        self.shutdown_rx = shutdown_rx;
+        self.shutdown = (shutdown_tx, shutdown_rx);
 
         self
     }
 
     pub fn run(&mut self) -> flume::Sender<()> {
-        let tx = self.shutdown_tx.clone();
-        let rx = self.shutdown_rx.clone();
+        let (tx, rx) = self.shutdown.clone();
 
         let handle = std::thread::spawn(move || loop {
             crate::EXECUTOR.poll();
@@ -109,35 +164,6 @@ impl ImputioRuntime {
         R: Send + 'static,
     {
         spawn_blocking!(fut, Priority::High)
-    }
-
-    pub fn with_tcp_listeners(
-        self,
-        listeners: Vec<(TcpListener, Option<flume::Sender<mio::event::Event>>)>,
-    ) -> Self {
-        use mio::Interest;
-
-        for (listener, notify) in listeners {
-            let token = Operation::RegistrationTcpAdd {
-                fd: listener,
-                interest: Interest::READABLE
-                    .add(Interest::WRITABLE)
-                    .add(Interest::PRIORITY),
-                notify,
-            };
-
-            let poller = crate::EXECUTOR.get_io_poll_handler();
-            if let Err(e) = poller.submit_op(token) {
-                tracing::error!("Error pushing to io poller {e:}");
-            }
-        }
-
-        self
-    }
-
-    pub fn add_operation_to_io_poller(&mut self, op: Operation) -> Result<(), ExecError> {
-        crate::EXECUTOR.submit_io_op(op)?;
-        Ok(())
     }
 }
 
@@ -260,5 +286,54 @@ mod tests {
             let result = std::panic::catch_unwind(|| spawn_blocking!(ex, Priority::High));
             assert!(result.is_err());
         });
+    }
+
+    #[test]
+    fn test_builder() {
+        let _rt = ImputioRuntimeBuilder::default()
+            .num_cores(0usize)
+            .exec_thread_id(thread::current().id())
+            .build()
+            .expect("Expected to succeed build");
+
+        let _rt = ImputioRuntimeBuilder::default()
+            .build()
+            .expect("Expected to succeed build");
+
+        // expect err here, calling build_impl() requires providing all member vars
+        let _rt = ImputioRuntimeBuilder::default()
+            .build_impl()
+            .expect_err("Expected to fail build");
+
+        // test calling through ImputioRuntime object
+        let _rt = ImputioRuntime::builder()
+            .shutdown(flume::bounded(1))
+            .build()
+            .expect("Expected to succeed build");
+    }
+
+    #[test]
+    fn test_builder_with_tcp() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 6666))
+            .expect("Failed to create tcp listener object");
+        let (notify_tx, _notify_rx) = flume::unbounded();
+
+        // test with ImputRuntimeBuilder method
+        let _rt = ImputioRuntimeBuilder::default()
+            .with_tcp_socket(
+                listener.try_clone().expect("failed to clone listener"),
+                None,
+                Some(notify_tx.clone()),
+            )
+            .shutdown(flume::bounded(1))
+            .build()
+            .expect("Expected to succeed build");
+
+        // test builder through ImputioRuntime-provided builder() method
+        let _rt = ImputioRuntime::builder()
+            .with_tcp_socket(listener, None, Some(notify_tx))
+            .shutdown(flume::bounded(1))
+            .build()
+            .expect("Expected to succeed build");
     }
 }
