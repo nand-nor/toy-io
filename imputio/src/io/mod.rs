@@ -75,6 +75,8 @@ impl PollHandle {
         Ok(())
     }
 
+    // FIXME: process is only needed for io_uring
+    #[allow(unused)]
     pub fn poll_and_process(&self) -> Result<()> {
         self.tx
             .send(IoOp::PollAndProcess)
@@ -83,6 +85,8 @@ impl PollHandle {
         Ok(())
     }
 
+    // FIXME: process is only needed for io_uring
+    #[allow(unused)]
     pub fn process(&self) -> Result<()> {
         self.tx
             .send(IoOp::Process)
