@@ -11,9 +11,6 @@ macro_rules! spawn {
 #[macro_export]
 macro_rules! spawn_blocking {
     ($fut:expr) => {
-        spawn_blocking!($fut, $crate::Priority::High)
-    };
-    ($fut:expr, $priority:expr) => {
-        $crate::spawn_blocking($fut, $priority)
+        $crate::spawn_blocking($fut)
     };
 }

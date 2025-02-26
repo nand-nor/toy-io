@@ -8,7 +8,7 @@ use std::{
 
 use super::PollError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PollCfg {
     event_size: usize,
 }

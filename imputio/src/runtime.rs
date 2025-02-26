@@ -1,31 +1,20 @@
 use std::{
     fmt::Debug,
     future::Future,
-    net::TcpListener,
     num::NonZero,
+    sync::Arc,
     thread::{self, ThreadId},
 };
 
+use core_affinity::CoreId;
 use derive_builder::Builder;
 use thiserror::Error;
 
 use crate::{
-    executor::handle::ExecError, io::PollError, spawn_blocking, ImputioTaskHandle, Priority,
+    executor::handle::{ExecError, ExecHandleCoordinator},
+    io::PollError,
+    spawn_blocking, ExecConfig,
 };
-
-pub trait RuntimeScheduler {
-    fn spawn<F, T>(&self, fut: F) -> ImputioTaskHandle<T>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static;
-
-    fn priority_spawn<F, T>(&self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static;
-
-    fn poll(&self);
-}
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -50,6 +39,8 @@ pub struct ImputioRuntime {
     _num_exec_threads: usize,
     exec_thread_id: ThreadId,
     shutdown: (flume::Sender<()>, flume::Receiver<()>),
+    // TODO: allow spawning multiple exec threads
+    _core_ids: Vec<CoreId>,
 }
 
 impl ImputioRuntimeBuilder {
@@ -74,24 +65,17 @@ impl ImputioRuntimeBuilder {
             self.exec_thread_id = Some(thread::current().id());
         }
 
+        if self._core_ids.is_none() {
+            self._core_ids = Some(
+                core_affinity::get_core_ids()
+                    .ok_or_else(|| RuntimeError::Internal("core ids not available".to_string()))?,
+            );
+        }
+
         let rt = self
             .build_impl()
             .map_err(|e| RuntimeError::Internal(format!("Invalid runtime builder args {e:}")))?;
         Ok(rt)
-    }
-
-    pub fn with_tcp_socket(
-        self,
-        listener: TcpListener,
-        interest: Option<mio::Interest>,
-        notifier: Option<flume::Sender<mio::event::Event>>,
-    ) -> Self {
-        crate::register_tcp_socket(listener, interest, notifier)
-            .inspect_err(|e| {
-                tracing::error!("Failed to register TCP socket {e:}");
-            })
-            .ok();
-        self
     }
 }
 
@@ -119,6 +103,8 @@ impl ImputioRuntime {
 
     pub fn new() -> Self {
         Self {
+            _core_ids: core_affinity::get_core_ids()
+                .unwrap_or_else(|| panic!("Unable to pull core IDs on platform")),
             num_cores: thread::available_parallelism()
                 .unwrap_or(NonZero::new(1usize).unwrap())
                 .get(),
@@ -138,11 +124,23 @@ impl ImputioRuntime {
         self
     }
 
+    // TODO: Populate the Exec thread config struct
+    // based on builder options
+    fn populate_exec_cfg(&self) -> ExecConfig {
+        ExecConfig::default()
+    }
+
     pub fn run(&mut self) -> flume::Sender<()> {
         let (tx, rx) = self.shutdown.clone();
 
+        let exec_cfg = self.populate_exec_cfg();
+
+        let exec = Arc::new(ExecHandleCoordinator::initialize(exec_cfg));
+        crate::EXECUTOR.store(exec);
+
         let handle = std::thread::spawn(move || loop {
-            crate::EXECUTOR.poll();
+            let exec = crate::EXECUTOR.load();
+            exec.poll();
             if let Ok(()) = rx.try_recv() {
                 tracing::debug!("Shutdown notice received");
                 break;
@@ -163,7 +161,7 @@ impl ImputioRuntime {
         F: Future<Output = R> + Send + 'static,
         R: Send + 'static,
     {
-        spawn_blocking!(fut, Priority::High)
+        spawn_blocking!(fut)
     }
 }
 
@@ -178,8 +176,8 @@ mod tests {
 
     use crate::{spawn, spawn_blocking, Priority};
 
-    /// Returns Poll::Pending until
-    /// internal count reaches 5
+    /// The [`std::future::Future`] impl for [`ExampleTask`]
+    /// returns [`Poll::Pending`] until internal count reaches 5
     #[derive(Debug)]
     pub struct ExampleTask {
         pub count: usize,
@@ -205,7 +203,8 @@ mod tests {
     }
 
     /// Increments internal count once, then
-    /// returns it (see impl for IntoFuture)
+    /// returns it (see below impl of
+    /// [`std::future::IntoFuture`])
     #[derive(Debug, Default)]
     pub struct OtherExampleTask {
         pub count: usize,
@@ -283,7 +282,7 @@ mod tests {
             // spawning a blocking task within the block_on context should panic
             // if we use #[should_panic], because there is a single global executor
             // object, that can cause other tests to fail
-            let result = std::panic::catch_unwind(|| spawn_blocking!(ex, Priority::High));
+            let result = std::panic::catch_unwind(|| spawn_blocking!(ex));
             assert!(result.is_err());
         });
     }
@@ -307,31 +306,6 @@ mod tests {
 
         // test calling through ImputioRuntime object
         let _rt = ImputioRuntime::builder()
-            .shutdown(flume::bounded(1))
-            .build()
-            .expect("Expected to succeed build");
-    }
-
-    #[test]
-    fn test_builder_with_tcp() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 6666))
-            .expect("Failed to create tcp listener object");
-        let (notify_tx, _notify_rx) = flume::unbounded();
-
-        // test with ImputRuntimeBuilder method
-        let _rt = ImputioRuntimeBuilder::default()
-            .with_tcp_socket(
-                listener.try_clone().expect("failed to clone listener"),
-                None,
-                Some(notify_tx.clone()),
-            )
-            .shutdown(flume::bounded(1))
-            .build()
-            .expect("Expected to succeed build");
-
-        // test builder through ImputioRuntime-provided builder() method
-        let _rt = ImputioRuntime::builder()
-            .with_tcp_socket(listener, None, Some(notify_tx))
             .shutdown(flume::bounded(1))
             .build()
             .expect("Expected to succeed build");

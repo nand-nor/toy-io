@@ -8,18 +8,25 @@ mod task;
 #[macro_use]
 pub mod macros;
 
-pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, ExecHandle};
+use arc_swap::ArcSwap;
+use executor::{handle::ExecHandleCoordinator, ExecConfig};
+
 use io::Operation;
-pub use runtime::{ImputioRuntime, RuntimeError, RuntimeScheduler};
+
+pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking};
+pub use runtime::{ImputioRuntime, RuntimeError};
 pub use task::{ImputioTask, ImputioTaskHandle};
 
 // re-export mio dep's Interest and Event objects
 pub use mio::{event::Event, Interest};
 
-use std::{os::fd::RawFd, sync::LazyLock};
+use std::{
+    os::fd::RawFd,
+    sync::{Arc, LazyLock},
+};
 
-// FIXME work this into builder pattern
-pub(crate) static EXECUTOR: LazyLock<ExecHandle> = LazyLock::new(|| ExecHandle::initialize(None));
+pub(crate) static EXECUTOR: LazyLock<ArcSwap<ExecHandleCoordinator>> =
+    LazyLock::new(|| ArcSwap::from(Arc::new(ExecHandleCoordinator::new())));
 
 /// Main entry point for running futures within an imputio runtime
 /// without configuring the runtime with additional params
@@ -85,7 +92,7 @@ pub fn register_fd(
 /// Provides public method for registering general IO operation having a handle to the
 /// runtime object. Excepts runtime to be in running state
 pub fn add_operation_to_io_poller(op: Operation) -> Result<(), RuntimeError> {
-    crate::EXECUTOR.submit_io_op(op)?;
+    crate::EXECUTOR.load().submit_io_op(op)?;
     Ok(())
 }
 

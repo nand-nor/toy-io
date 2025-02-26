@@ -1,27 +1,71 @@
 pub mod handle;
 
+use core_affinity::CoreId;
 use std::{
     future::Future,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-pub use handle::ExecHandle;
+pub(crate) struct ExecConfig {
+    exec_thread_config: Vec<(ThreadConfig, ThreadConfig)>,
+}
 
-use crate::ImputioTaskHandle;
+impl Default for ExecConfig {
+    fn default() -> Self {
+        Self {
+            exec_thread_config: vec![
+                (ThreadConfig::default(), ThreadConfig::default_io_poller()),
+                (ThreadConfig::default(), ThreadConfig::default_io_poller()),
+                (ThreadConfig::default(), ThreadConfig::default_io_poller()),
+            ],
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ThreadConfig {
+    thread_name: String,
+    stack_size: usize,
+    core_id: Option<CoreId>,
+    poll_cfg: Option<PollCfg>,
+}
+
+impl Default for ThreadConfig {
+    fn default() -> Self {
+        Self {
+            thread_name: "imputio-exec-thread".to_string(),
+            stack_size: u16::MAX as usize,
+            core_id: None,
+            poll_cfg: None,
+        }
+    }
+}
+
+impl ThreadConfig {
+    fn default_io_poller() -> Self {
+        let mut def = Self::default();
+        def.poll_cfg = Some(PollCfg::default());
+        def.thread_name = "imputio-io-actor-thread".to_string();
+        def
+    }
+}
+
+use crate::{io::PollCfg, ImputioTaskHandle};
 
 pub fn imputio_spawn<F, T>(fut: F, priority: crate::Priority) -> ImputioTaskHandle<T>
 where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    crate::EXECUTOR.spawn(fut, priority)
+    let exec = crate::EXECUTOR.load();
+    exec.spawn(fut, priority)
 }
 
 /// #Panics
 ///
 /// If spawn_blocking is called in a blocking context, the thread will
 /// panic
-pub fn imputio_spawn_blocking<F, T>(fut: F, priority: crate::Priority) -> T
+pub fn imputio_spawn_blocking<F, T>(fut: F) -> T
 where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
@@ -30,7 +74,8 @@ where
     static FLAG: AtomicBool = AtomicBool::new(false);
 
     if !FLAG.swap(true, Ordering::SeqCst) {
-        let res = crate::EXECUTOR.spawn_blocking(fut, priority);
+        let exec = crate::EXECUTOR.load();
+        let res = exec.spawn_blocking(fut);
         FLAG.store(false, Ordering::SeqCst);
         res
     } else {
