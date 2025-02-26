@@ -116,7 +116,7 @@ impl ExecHandleCoordinator {
     }
 
     pub fn submit_io_op(&self, op: Operation) -> Result<()> {
-        let index = (self.index.load(Ordering::SeqCst) + 1).wrapping_rem(self.handles.len());
+        let index = (self.index.load(Ordering::SeqCst) + 1) % self.handles.len();
         self.index.store(index, Ordering::SeqCst);
 
         self.handles[index].submit_io_op(op)
@@ -206,7 +206,7 @@ impl ExecHandle {
             .inspect_err(|e| tracing::error!("submit io op failure {e:}"))
             .ok();
 
-        Ok(rx.recv()??)
+        rx.recv()?
     }
 }
 

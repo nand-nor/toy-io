@@ -43,10 +43,11 @@ impl Default for ThreadConfig {
 
 impl ThreadConfig {
     fn default_io_poller() -> Self {
-        let mut def = Self::default();
-        def.poll_cfg = Some(PollCfg::default());
-        def.thread_name = "imputio-io-actor-thread".to_string();
-        def
+        Self {
+            poll_cfg: Some(PollCfg::default()),
+            thread_name: "imputio-io-actor-thread".to_string(),
+            ..Default::default()
+        }
     }
 }
 
@@ -71,12 +72,14 @@ where
     T: Send + 'static,
 {
     // FLAG is used to trigger panics (to avoid blocking forever)
-    static FLAG: AtomicBool = AtomicBool::new(false);
+    thread_local! {
+        static FLAG: AtomicBool = const { AtomicBool::new(false) };
+    };
 
-    if !FLAG.swap(true, Ordering::SeqCst) {
+    if !FLAG.with(|k| k.swap(true, Ordering::SeqCst)) {
         let exec = crate::EXECUTOR.load();
         let res = exec.spawn_blocking(fut);
-        FLAG.store(false, Ordering::SeqCst);
+        FLAG.with(|k| k.store(false, Ordering::SeqCst));
         res
     } else {
         panic!("Blocking twice on same thread will block forever")

@@ -39,7 +39,7 @@ pub struct ImputioRuntime {
     _num_exec_threads: usize,
     exec_thread_id: ThreadId,
     shutdown: (flume::Sender<()>, flume::Receiver<()>),
-    // TODO: allow spawning multiple exec threads
+    // TODO: allow optional config to pin certain threads to cores
     _core_ids: Vec<CoreId>,
 }
 
@@ -272,16 +272,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_spawn_in_block_on_ctx() {
         ImputioRuntime::new().block_on(async move {
             // count does not matter here as this test
             // is checking for panics to arise when expected
             let ex = ExampleTask { count: 0 };
 
-            // spawning a blocking task within the block_on context should panic
-            // if we use #[should_panic], because there is a single global executor
-            // object, that can cause other tests to fail
             let result = std::panic::catch_unwind(|| spawn_blocking!(ex));
             assert!(result.is_err());
         });
