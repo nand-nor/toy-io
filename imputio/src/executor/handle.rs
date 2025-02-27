@@ -1,13 +1,20 @@
-use std::{collections::VecDeque, future::Future, pin::Pin};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 #[cfg(feature = "fairness")]
 use rand::{self, Rng};
 
 use crate::{
-    io::{Operation, PollCfg, PollError, PollHandle},
+    io::{Operation, PollError, PollHandle},
     task::{ImputioTask, ImputioTaskHandle},
     Priority,
 };
+
+use super::{ExecConfig, ThreadConfig};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ExecError {
@@ -21,30 +28,187 @@ pub enum ExecError {
     IoPoller(#[from] PollError),
 }
 
-impl crate::RuntimeScheduler for ExecHandle {
-    fn spawn<F, T>(&self, fut: F) -> ImputioTaskHandle<T>
+type Result<T> = std::result::Result<T, ExecError>;
+type Reply<T> = flume::Sender<T>;
+
+/// [`Transaction`] enum defines the [`Executor`]
+/// actor methods a handle ([`ExecHandle`]) to
+/// an [`Executor`] object can execute
+pub enum Transaction {
+    Spawn {
+        task: ImputioTask,
+    },
+    Poll,
+    SubmitIoOp {
+        op: Operation,
+        reply: Reply<Result<()>>,
+    },
+}
+
+/// The [`ExecHandleCoordinator`] provides a simple, global
+/// entry point to a series of handles ([`ExecHandle`]) that
+/// can be used to send  [`Transaction`] requests to one or
+/// more [`Executor`] objects executing on their own thread.
+/// Each [`Executor`] additionally spawns another thread to
+/// run it's own I/O (epoll) actor, which is used to enqueue
+/// I/O futures onto separate from the general purpose task
+/// queue that each [`Executor`] actor is responsible for
+/// polling
+pub struct ExecHandleCoordinator {
+    handles: Vec<ExecHandle>,
+    index: AtomicUsize,
+}
+
+impl ExecHandleCoordinator {
+    pub fn new() -> Self {
+        let (tx, _rx) = flume::bounded(1);
+        Self {
+            handles: vec![ExecHandle::new(tx)],
+            index: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn initialize(exec_cfg: ExecConfig) -> Self {
+        let handles = exec_cfg
+            .exec_thread_config
+            .iter()
+            .filter_map(|(exec_handle_cfg, io_poller_cfg)| {
+                ExecHandle::initialize(exec_handle_cfg.clone(), io_poller_cfg.clone()).ok()
+            })
+            .collect::<Vec<_>>();
+
+        Self {
+            handles,
+            index: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn spawn<F, T>(&self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        ExecHandle::spawn(self, fut, Priority::Medium)
+        let index = (self.index.load(Ordering::SeqCst) + 1) % self.handles.len();
+        self.index.store(index, Ordering::SeqCst);
+
+        self.handles[index].spawn(fut, priority)
     }
 
-    fn poll(&self) {
-        ExecHandle::poll(self)
-    }
-
-    fn priority_spawn<F, T>(&self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
+    /// Skips enqueuing the future to task queue, creates a new task and blocks until
+    /// it completes
+    pub(crate) fn spawn_blocking<F, T>(&self, fut: F) -> T
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        ExecHandle::spawn(self, fut, priority)
+        // TODO spawn blocking only on local thread
+        let spawn_fut: Pin<Box<dyn Future<Output = T> + Send>> = Box::pin(fut);
+        // note: priority for blocking tasks does not apply
+        let task = ImputioTask::new(spawn_fut, Priority::High);
+        task.run()
+    }
+
+    pub fn poll(&self) {
+        let index = (self.index.load(Ordering::SeqCst) + 1) % self.handles.len();
+        self.index.store(index, Ordering::SeqCst);
+
+        self.handles[index].poll();
+    }
+
+    pub fn submit_io_op(&self, op: Operation) -> Result<()> {
+        let index = (self.index.load(Ordering::SeqCst) + 1) % self.handles.len();
+        self.index.store(index, Ordering::SeqCst);
+
+        self.handles[index].submit_io_op(op)
     }
 }
 
-type Result<T> = std::result::Result<T, ExecError>;
-type Reply<T> = flume::Sender<T>;
+/// Defines handle to the [`Executor`]
+/// actor
+#[derive(Clone)]
+struct ExecHandle {
+    tx: flume::Sender<Transaction>,
+}
+
+impl ExecHandle {
+    pub(crate) fn new(tx: flume::Sender<Transaction>) -> Self {
+        Self { tx }
+    }
+
+    fn initialize(exec_cfg: ThreadConfig, poller_cfg: ThreadConfig) -> Result<Self> {
+        let (tx, rx) = flume::unbounded();
+        let handle = Self::new(tx);
+
+        let exec = Executor::initialize(rx, poller_cfg)?;
+
+        std::thread::Builder::new()
+            .name(exec_cfg.thread_name)
+            .stack_size(exec_cfg.stack_size)
+            //.no_hooks()
+            .spawn(move || {
+                if let Some(core) = exec_cfg.core_id {
+                    core_affinity::set_for_current(core);
+                }
+                exec.run()
+            })?;
+        Ok(handle)
+    }
+
+    pub fn spawn<F, T>(&self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (tx, rx) = flume::unbounded();
+
+        let spawn_fut = Box::pin(async move {
+            let res = fut.await;
+            tx.send(res).ok();
+        });
+
+        let task = ImputioTask::new(spawn_fut, priority);
+
+        let op = Transaction::Spawn { task };
+        self.tx
+            .send(op)
+            .inspect_err(|e| tracing::error!("spawn op failure {e:}"))
+            .ok();
+
+        ImputioTaskHandle { receiver: rx }
+    }
+
+    /// Skips enqueuing the future to task queue, creates a new task and blocks until
+    /// it completes
+    #[allow(unused)] // TODO spawn blocking only on local thread
+    pub(crate) fn spawn_blocking<F, T>(&self, fut: F) -> T
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let spawn_fut: Pin<Box<dyn Future<Output = T> + Send>> = Box::pin(fut);
+        // note: priority for blocking tasks does not apply
+        let task = ImputioTask::new(spawn_fut, Priority::High);
+        task.run()
+    }
+
+    pub fn poll(&self) {
+        self.tx
+            .send(Transaction::Poll)
+            .inspect_err(|e| tracing::error!("poll op failure {e:}"))
+            .ok();
+    }
+
+    pub fn submit_io_op(&self, op: Operation) -> Result<()> {
+        let (reply, rx) = flume::bounded(1);
+
+        self.tx
+            .send(Transaction::SubmitIoOp { op, reply })
+            .inspect_err(|e| tracing::error!("submit io op failure {e:}"))
+            .ok();
+
+        rx.recv()?
+    }
+}
 
 /// Simple "priority" executor with higher priority
 /// queues dequeuing tasks first. Simple io operations
@@ -58,17 +222,31 @@ pub struct Executor {
 }
 
 impl Executor {
-    fn initialize(rx: flume::Receiver<Transaction>, poll_cfg: Option<PollCfg>) -> Self {
-        tracing::debug!("Running executor thread");
+    fn initialize(rx: flume::Receiver<Transaction>, cfg: ThreadConfig) -> Result<Self> {
+        tracing::debug!(
+            "Running executor actor thread id: {:?}, name  {:?}",
+            std::thread::current().id(),
+            std::thread::current().name()
+        );
 
         // FIXME: allow runtime with build options to specify size of poll cfg event queue
-        let (actor, handle) = PollHandle::initialize(poll_cfg);
-        std::thread::spawn(move || actor.run());
-        Self {
+        let (actor, handle) = PollHandle::initialize(cfg.poll_cfg)?;
+
+        std::thread::Builder::new()
+            .name(cfg.thread_name)
+            .stack_size(cfg.stack_size)
+            //.no_hooks()
+            .spawn(move || {
+                if let Some(core) = cfg.core_id {
+                    core_affinity::set_for_current(core);
+                }
+                actor.run()
+            })?;
+        Ok(Self {
             poll_handle: handle,
             rx,
             tasks: [(); 5].map(|_| VecDeque::new()),
-        }
+        })
     }
 
     fn spawn(&mut self, task: ImputioTask) {
@@ -129,88 +307,5 @@ impl Executor {
                 }
             };
         }
-    }
-}
-
-pub enum Transaction {
-    Spawn {
-        task: ImputioTask,
-    },
-    Poll,
-    SubmitIoOp {
-        op: Operation,
-        reply: Reply<Result<()>>,
-    },
-}
-
-#[derive(Clone)]
-pub struct ExecHandle {
-    tx: flume::Sender<Transaction>,
-}
-
-impl ExecHandle {
-    fn new(tx: flume::Sender<Transaction>) -> Self {
-        Self { tx }
-    }
-
-    pub fn initialize(poll_cfg: Option<PollCfg>) -> ExecHandle {
-        let (tx, rx) = flume::unbounded();
-        let exec = Executor::initialize(rx, poll_cfg);
-        let handle = Self::new(tx);
-        std::thread::spawn(move || exec.run());
-        handle
-    }
-
-    pub fn spawn<F, T>(&self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
-    {
-        let (tx, rx) = flume::unbounded();
-
-        let spawn_fut = Box::pin(async move {
-            let res = fut.await;
-            tx.send(res).ok();
-        });
-
-        let task = ImputioTask::new(spawn_fut, priority);
-
-        let op = Transaction::Spawn { task };
-        self.tx
-            .send(op)
-            .inspect_err(|e| tracing::error!("spawn op failure {e:}"))
-            .ok();
-
-        ImputioTaskHandle { receiver: rx }
-    }
-
-    /// Skips enqueuing the future to task queue, creates a new task and blocks until
-    /// it completes
-    pub(crate) fn spawn_blocking<F, T>(&self, fut: F, priority: Priority) -> T
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
-    {
-        let spawn_fut: Pin<Box<dyn Future<Output = T> + Send>> = Box::pin(fut);
-        let task = ImputioTask::new(spawn_fut, priority);
-        task.run()
-    }
-
-    pub fn poll(&self) {
-        self.tx
-            .send(Transaction::Poll)
-            .inspect_err(|e| tracing::error!("poll op failure {e:}"))
-            .ok();
-    }
-
-    pub fn submit_io_op(&self, op: Operation) -> Result<()> {
-        let (reply, rx) = flume::bounded(1);
-
-        self.tx
-            .send(Transaction::SubmitIoOp { op, reply })
-            .inspect_err(|e| tracing::error!("submit io op failure {e:}"))
-            .ok();
-
-        rx.recv().expect("Unable to submit io op")
     }
 }

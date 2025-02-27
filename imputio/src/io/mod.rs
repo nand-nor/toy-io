@@ -51,11 +51,11 @@ impl PollHandle {
         Self { tx }
     }
 
-    pub fn initialize(poll_cfg: Option<PollCfg>) -> (PollerActor, PollHandle) {
+    pub fn initialize(poll_cfg: Option<PollCfg>) -> Result<(PollerActor, PollHandle)> {
         let (tx, rx) = flume::unbounded();
-        let poll_ring = PollerActor::new(rx, poll_cfg);
+        let poll_ring = PollerActor::new(rx, poll_cfg)?;
         let handle = Self::new(tx);
-        (poll_ring, handle)
+        Ok((poll_ring, handle))
     }
 
     pub fn submit_op(&self, op: Operation) -> Result<()> {
@@ -112,12 +112,17 @@ impl std::fmt::Debug for PollerActor {
 
 impl PollerActor {
     #[instrument]
-    pub fn new(receiver: flume::Receiver<IoOp>, poll_cfg: Option<PollCfg>) -> Self {
-        tracing::debug!("New io actor created");
-        Self {
-            poller: Poller::new(poll_cfg.unwrap_or_default()).expect("Unable to create new poller"),
+    pub fn new(receiver: flume::Receiver<IoOp>, poll_cfg: Option<PollCfg>) -> Result<Self> {
+        tracing::debug!(
+            "Running io poller actor thread id: {:?}, name  {:?}",
+            std::thread::current().id(),
+            std::thread::current().name()
+        );
+
+        Ok(Self {
+            poller: Poller::new(poll_cfg.unwrap_or_default())?,
             receiver,
-        }
+        })
     }
 
     #[instrument]
