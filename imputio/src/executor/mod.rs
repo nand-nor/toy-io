@@ -1,6 +1,5 @@
 pub mod handle;
 
-use core_affinity::CoreId;
 use std::{
     future::Future,
     sync::atomic::{AtomicBool, Ordering},
@@ -34,13 +33,17 @@ impl ExecConfig {
         self.exec_thread_config = exec_thread_config;
         self
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.exec_thread_config.is_empty()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfig {
     thread_name: String,
     stack_size: usize,
-    core_id: Option<CoreId>,
+    core_id: Option<usize>,
 }
 
 impl Default for ThreadConfig {
@@ -59,7 +62,7 @@ impl ThreadConfig {
         self
     }
 
-    pub fn with_core_affinity(mut self, core_id: CoreId) -> Self {
+    pub fn with_core_affinity(mut self, core_id: usize) -> Self {
         self.core_id = Some(core_id);
         self
     }
@@ -99,7 +102,7 @@ impl ExecThreadConfig {
         self
     }
 
-    pub fn with_core_affinity(mut self, core_id: CoreId) -> Self {
+    pub fn with_core_affinity(mut self, core_id: usize) -> Self {
         self.thread_cfg = self.thread_cfg.with_core_affinity(core_id);
         self
     }
@@ -139,7 +142,7 @@ impl PollThreadConfig {
         self
     }
 
-    pub fn with_core_affinity(mut self, core_id: CoreId) -> Self {
+    pub fn with_core_affinity(mut self, core_id: usize) -> Self {
         self.thread_cfg = self.thread_cfg.with_core_affinity(core_id);
         self
     }

@@ -5,6 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use core_affinity::CoreId;
 #[cfg(feature = "fairness")]
 use rand::{self, Rng};
 
@@ -146,7 +147,7 @@ impl ExecHandle {
             //.no_hooks()
             .spawn(move || {
                 if let Some(core) = exec_cfg.core_id {
-                    core_affinity::set_for_current(core);
+                    core_affinity::set_for_current(CoreId { id: core });
                 }
                 exec.run()
             })?;
@@ -231,7 +232,7 @@ impl Executor {
             //.no_hooks()
             .spawn(move || {
                 if let Some(core) = cfg.thread_cfg.core_id {
-                    core_affinity::set_for_current(core);
+                    core_affinity::set_for_current(CoreId { id: core });
                 }
                 actor.run()
             })?;

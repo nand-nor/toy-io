@@ -16,5 +16,8 @@ derive_builder = "0.20.2"
 arc-swap = "1.7.1"
 core_affinity.workspace=true
 
+[dev-dependencies]
+libc="*"
+
 [features]
 fairness=["dep:rand"]

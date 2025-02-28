@@ -113,12 +113,6 @@ impl std::fmt::Debug for PollerActor {
 impl PollerActor {
     #[instrument]
     pub fn new(receiver: flume::Receiver<IoOp>, poll_cfg: PollerCfg) -> Result<Self> {
-        tracing::trace!(
-            "Running io poller actor thread id: {:?}, name  {:?}",
-            std::thread::current().id(),
-            std::thread::current().name()
-        );
-
         Ok(Self {
             poller: Poller::new(poll_cfg)?,
             receiver,
@@ -127,6 +121,12 @@ impl PollerActor {
 
     #[instrument]
     pub fn run(mut self) {
+        tracing::trace!(
+            "Running io poller actor thread id: {:?}, name  {:?}",
+            std::thread::current().id(),
+            std::thread::current().name()
+        );
+
         while let Ok(event) = self.receiver.recv() {
             match event {
                 IoOp::Submit { op } => self.submit(op).ok(),
