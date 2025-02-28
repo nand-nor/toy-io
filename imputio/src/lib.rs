@@ -9,11 +9,14 @@ mod task;
 pub mod macros;
 
 use arc_swap::ArcSwap;
-use executor::{handle::ExecHandleCoordinator, ExecConfig};
+use executor::handle::ExecHandleCoordinator;
 
 use io::Operation;
 
-pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking};
+pub use executor::{
+    imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, ExecConfig, ExecThreadConfig,
+    PollThreadConfig,
+};
 pub use runtime::{ImputioRuntime, RuntimeError};
 pub use task::{ImputioTask, ImputioTaskHandle};
 

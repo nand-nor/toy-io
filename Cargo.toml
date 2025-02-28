@@ -12,6 +12,7 @@ flume = "0.11.1"
 tracing = "0.1.41"
 thiserror = "2.0.11"
 mio = {version="1.0.3", features=["net", "os-ext", "os-poll"]}
-slab = {version="0.4.9"}
+slab = "0.4.9"
+core_affinity = "0.8.1"
 imputio = { path = "./imputio"}
 imputio-utils= {path="./imputio-utils"}

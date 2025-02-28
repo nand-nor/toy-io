@@ -4,7 +4,7 @@
 
 mod epoll;
 
-pub use epoll::{Operation, PollCfg, Poller};
+pub use epoll::{Operation, Poller, PollerCfg};
 
 use tracing::instrument;
 
@@ -51,7 +51,7 @@ impl PollHandle {
         Self { tx }
     }
 
-    pub fn initialize(poll_cfg: Option<PollCfg>) -> Result<(PollerActor, PollHandle)> {
+    pub fn initialize(poll_cfg: PollerCfg) -> Result<(PollerActor, PollHandle)> {
         let (tx, rx) = flume::unbounded();
         let poll_ring = PollerActor::new(rx, poll_cfg)?;
         let handle = Self::new(tx);
@@ -112,15 +112,15 @@ impl std::fmt::Debug for PollerActor {
 
 impl PollerActor {
     #[instrument]
-    pub fn new(receiver: flume::Receiver<IoOp>, poll_cfg: Option<PollCfg>) -> Result<Self> {
-        tracing::debug!(
+    pub fn new(receiver: flume::Receiver<IoOp>, poll_cfg: PollerCfg) -> Result<Self> {
+        tracing::trace!(
             "Running io poller actor thread id: {:?}, name  {:?}",
             std::thread::current().id(),
             std::thread::current().name()
         );
 
         Ok(Self {
-            poller: Poller::new(poll_cfg.unwrap_or_default())?,
+            poller: Poller::new(poll_cfg)?,
             receiver,
         })
     }

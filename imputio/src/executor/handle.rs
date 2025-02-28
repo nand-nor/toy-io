@@ -14,7 +14,7 @@ use crate::{
     Priority,
 };
 
-use super::{ExecConfig, ThreadConfig};
+use super::{ExecConfig, PollThreadConfig, ThreadConfig};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ExecError {
@@ -72,8 +72,8 @@ impl ExecHandleCoordinator {
         let handles = exec_cfg
             .exec_thread_config
             .iter()
-            .filter_map(|(exec_handle_cfg, io_poller_cfg)| {
-                ExecHandle::initialize(exec_handle_cfg.clone(), io_poller_cfg.clone()).ok()
+            .filter_map(|cfg| {
+                ExecHandle::initialize(cfg.thread_cfg.clone(), cfg.poll_thread_cfg.clone()).ok()
             })
             .collect::<Vec<_>>();
 
@@ -135,10 +135,9 @@ impl ExecHandle {
         Self { tx }
     }
 
-    fn initialize(exec_cfg: ThreadConfig, poller_cfg: ThreadConfig) -> Result<Self> {
+    fn initialize(exec_cfg: ThreadConfig, poller_cfg: PollThreadConfig) -> Result<Self> {
         let (tx, rx) = flume::unbounded();
         let handle = Self::new(tx);
-
         let exec = Executor::initialize(rx, poller_cfg)?;
 
         std::thread::Builder::new()
@@ -222,22 +221,16 @@ pub struct Executor {
 }
 
 impl Executor {
-    fn initialize(rx: flume::Receiver<Transaction>, cfg: ThreadConfig) -> Result<Self> {
-        tracing::debug!(
-            "Running executor actor thread id: {:?}, name  {:?}",
-            std::thread::current().id(),
-            std::thread::current().name()
-        );
-
+    fn initialize(rx: flume::Receiver<Transaction>, cfg: PollThreadConfig) -> Result<Self> {
         // FIXME: allow runtime with build options to specify size of poll cfg event queue
         let (actor, handle) = PollHandle::initialize(cfg.poll_cfg)?;
 
         std::thread::Builder::new()
-            .name(cfg.thread_name)
-            .stack_size(cfg.stack_size)
+            .name(cfg.thread_cfg.thread_name)
+            .stack_size(cfg.thread_cfg.stack_size)
             //.no_hooks()
             .spawn(move || {
-                if let Some(core) = cfg.core_id {
+                if let Some(core) = cfg.thread_cfg.core_id {
                     core_affinity::set_for_current(core);
                 }
                 actor.run()
@@ -270,6 +263,12 @@ impl Executor {
     }
 
     pub fn poll(&mut self) {
+        if let Err(e) = self.poll_handle.poll() {
+            tracing::error!("Error polling io poller {e:}");
+        } else {
+            self.poll_handle.process().ok();
+        }
+
         if let Some(mut task) = self.get_task() {
             match task.poll_task() {
                 std::task::Poll::Ready(_val) => {}
@@ -277,12 +276,6 @@ impl Executor {
                     self.tasks[task.priority as usize].push_back(task);
                 }
             };
-        }
-
-        if let Err(e) = self.poll_handle.poll() {
-            tracing::error!("Error polling io poller {e:}");
-        } else {
-            self.poll_handle.process().ok();
         }
     }
 
@@ -296,8 +289,13 @@ impl Executor {
         self.poll_handle.clone()
     }
 
-    #[tracing::instrument]
     fn run(mut self) {
+        tracing::trace!(
+            "Running executor actor thread id: {:?}, name  {:?}",
+            std::thread::current().id(),
+            std::thread::current().name()
+        );
+
         while let Ok(event) = self.rx.recv() {
             match event {
                 Transaction::Poll => self.poll(),

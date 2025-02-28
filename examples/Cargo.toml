@@ -13,6 +13,7 @@ imputio-utils.workspace=true
 imputio.workspace=true
 mio.workspace=true
 tracing-subscriber = { version="0.3.0", features=["env-filter"]}
+core_affinity.workspace=true
 
 [features]
 delay-delete=["imputio-utils/delay-delete"]
@@ -32,3 +33,7 @@ path = "./server/tcp-server/main.rs"
 [[example]]
 name = "simple-server"
 path = "./server/simple/main.rs"
+
+[[example]]
+name = "exec-config"
+path = "./exec-config/main.rs"

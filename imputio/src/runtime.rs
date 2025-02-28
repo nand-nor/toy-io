@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::{
     executor::handle::{ExecError, ExecHandleCoordinator},
     io::PollError,
-    spawn_blocking, ExecConfig,
+    spawn_blocking, ExecConfig, ExecThreadConfig, PollThreadConfig,
 };
 
 #[derive(Error, Debug)]
@@ -41,6 +41,7 @@ pub struct ImputioRuntime {
     shutdown: (flume::Sender<()>, flume::Receiver<()>),
     // TODO: allow optional config to pin certain threads to cores
     _core_ids: Vec<CoreId>,
+    cfg: ExecConfig,
 }
 
 impl ImputioRuntimeBuilder {
@@ -58,6 +59,8 @@ impl ImputioRuntimeBuilder {
         }
 
         if self._num_exec_threads.is_none() {
+            tracing::warn!("num_exec_threads is none, using defaults");
+
             self._num_exec_threads = Some(1usize);
         }
 
@@ -66,16 +69,64 @@ impl ImputioRuntimeBuilder {
         }
 
         if self._core_ids.is_none() {
+            tracing::trace!("core ids is none, using defaults");
+
             self._core_ids = Some(
                 core_affinity::get_core_ids()
                     .ok_or_else(|| RuntimeError::Internal("core ids not available".to_string()))?,
             );
         }
 
+        if self.cfg.is_none() {
+            tracing::trace!("exec cfg is none, using defaults");
+            self.cfg = Some(ExecConfig::default());
+        }
+
         let rt = self
             .build_impl()
             .map_err(|e| RuntimeError::Internal(format!("Invalid runtime builder args {e:}")))?;
         Ok(rt)
+    }
+
+    /// Allow user to supply fine-grain control over
+    /// which threads get pinned to what core, what their
+    /// names are, stack sized, etc. Use this option for
+    /// reserving cores as well
+    pub fn with_exec_config(mut self, cfg: ExecConfig) -> Self {
+        self.cfg = Some(cfg);
+        self
+    }
+
+    /// Allow user to specify that all available cores should be
+    /// used. With this mechanism there will essentially be two threads
+    /// pinned to each available core, one for an
+    /// [`crate::executor::handle::Executor`] actor and one for the
+    /// I/O poller ([`crate::io::Poller`]) actor that is spawned by
+    /// the given [`crate::executor::handle::Executor`] actor
+    pub fn use_all_available_cores_with_executor_per_core(mut self) -> Self {
+        let available_cores = core_affinity::get_core_ids().unwrap_or_default();
+
+        let execs = available_cores
+            .iter()
+            .map(|core| {
+                let poller_cfg = PollThreadConfig::default()
+                    .with_core_affinity(*core)
+                    .with_name(format!("imputio-io-{:?}", core.id));
+                ExecThreadConfig::default()
+                    .with_core_affinity(*core)
+                    .with_poll_thread_cfg(poller_cfg)
+                    .with_name(format!("imputio-exec-{:?}", core.id))
+            })
+            .collect::<Vec<_>>();
+
+        let exec_cfg = if execs.is_empty() {
+            ExecConfig::default()
+        } else {
+            ExecConfig::default().with_cfg(execs)
+        };
+
+        self.cfg = Some(exec_cfg);
+        self
     }
 }
 
@@ -111,6 +162,7 @@ impl ImputioRuntime {
             _num_exec_threads: 1,
             exec_thread_id: thread::current().id(), // replaced later with exec thread id
             shutdown: flume::bounded(1),
+            cfg: ExecConfig::default(),
         }
     }
 
@@ -124,35 +176,22 @@ impl ImputioRuntime {
         self
     }
 
-    // TODO: Populate the Exec thread config struct
-    // based on builder options
-    fn populate_exec_cfg(&self) -> ExecConfig {
-        ExecConfig::default()
-    }
-
     pub fn run(&mut self) -> flume::Sender<()> {
         let (tx, rx) = self.shutdown.clone();
 
-        let exec_cfg = self.populate_exec_cfg();
-
-        let exec = Arc::new(ExecHandleCoordinator::initialize(exec_cfg));
+        let exec = Arc::new(ExecHandleCoordinator::initialize(self.cfg.clone()));
         crate::EXECUTOR.store(exec);
 
         let handle = std::thread::spawn(move || loop {
             let exec = crate::EXECUTOR.load();
             exec.poll();
             if let Ok(()) = rx.try_recv() {
-                tracing::debug!("Shutdown notice received");
+                tracing::warn!("Shutdown notice received");
                 break;
             }
         });
         self.exec_thread_id = handle.thread().id();
-        tracing::info!(
-            "Running ImputioRuntime on thread id {:?}, num cores available: {:?}",
-            self.exec_thread_id,
-            self.num_cores
-        );
-
+        tracing::info!("Running ImputioRuntime with cfg: {:?}", self.cfg);
         tx
     }
 

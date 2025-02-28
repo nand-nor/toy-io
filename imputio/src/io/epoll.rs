@@ -9,11 +9,11 @@ use std::{
 use super::PollError;
 
 #[derive(Debug, Clone)]
-pub struct PollCfg {
+pub struct PollerCfg {
     event_size: usize,
 }
 
-impl Default for PollCfg {
+impl Default for PollerCfg {
     fn default() -> Self {
         Self { event_size: 256 }
     }
@@ -65,7 +65,7 @@ pub struct Poller {
 }
 
 impl Poller {
-    pub fn new(cfg: PollCfg) -> Result<Self> {
+    pub fn new(cfg: PollerCfg) -> Result<Self> {
         let poller: mio::Poll = mio::Poll::new()?;
         let events = Events::with_capacity(cfg.event_size);
 
@@ -85,7 +85,7 @@ impl Poller {
             if let Some(op) = self.tokens.get(event.token().0) {
                 match op {
                     Operation::RegistrationFdAdd { notify, .. } => {
-                        tracing::debug!("Adding modified event! {event:?}");
+                        tracing::trace!("Adding FD {event:?}");
 
                         if let Some(notify) = notify {
                             if let Err(e) = notify.send(event.clone()) {
@@ -96,7 +96,7 @@ impl Poller {
                     Operation::ModifyRegistration { .. } => todo!(),
                     Operation::DeleteRegistration { .. } => todo!(),
                     Operation::RegistrationTcpAdd { notify, .. } => {
-                        tracing::debug!("Adding tcp socket! {event:?}");
+                        tracing::trace!("Adding tcp socket {event:?}");
 
                         if let Some(notify) = notify {
                             if let Err(e) = notify.send(event.clone()) {
