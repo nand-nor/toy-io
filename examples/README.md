@@ -15,11 +15,29 @@ Optional features include `fairness` and `delay-delete`
 RUST_LOG=debug cargo run --example events [--features=["fairness"],["delay-delete"]]
 ```
 
-### exec-config
-Example of advanced configuration options to provide to the runtime builder. 
+### config-events
+Example of advanced configuration options to provide to the runtime builder, extending the `events` example
 Optional features include `fairness` and `delay-delete`
 ```
-RUST_LOG=debug cargo run --example exec-config [--features=["fairness"],["delay-delete"]]
+RUST_LOG=debug cargo run --example config-events [--features=["fairness"],["delay-delete"]]
+```
+
+### config-sockets
+Example of advanced configuration options to provide to the runtime builder when building
+a multi-socket TCP server 
+Optional features include `fairness` and `delay-delete`
+```
+RUST_LOG=debug cargo run --example config-sockets [--features=["fairness"],["delay-delete"]]
+```
+
+### config-files
+Example of advanced configuration options to provide to the runtime builder shown with
+example file operations, using the `tempfile` dependency to open a temporary directory and
+open a numebr of files to read from /write to. 
+
+Optional features include `fairness` and `delay-delete`
+```
+RUST_LOG=debug cargo run --example config-files [--features=["fairness"],["delay-delete"]]
 ```
 
 ### simple-server
