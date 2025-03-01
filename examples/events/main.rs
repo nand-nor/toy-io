@@ -43,7 +43,9 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
         // if the example is compiled with the delay-delete feature flag, then
         // spawn a new thread to run the cleanup background task
         let garbage_bus = handle.clone();
-        std::thread::spawn(move || imputio_utils::event_bus::cleanup_task(garbage_bus));
+        std::thread::spawn(move || {
+            imputio_utils::event_bus::cleanup_task(garbage_bus, std::time::Duration::from_secs(2))
+        });
     }
     // create a subscriber handle
     let subscriber: SubHandle<Packet<'_>> = handle.get_subscriber().await?;

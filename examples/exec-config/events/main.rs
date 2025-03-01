@@ -40,7 +40,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
 
     let mut start = 0;
     if !available_cores.is_empty() {
-        //  core_affinity::set_for_current(available_cores[0]);
+        // user can set core affinity of main thread themselves if they want
+        core_affinity::set_for_current(available_cores[0]);
         start = 1;
     }
 
@@ -94,7 +95,9 @@ async fn future_spam_with_event_bus(
         // if the example is compiled with the delay-delete feature flag, then
         // spawn a new thread to run the cleanup background task
         let garbage_bus = handle.clone();
-        std::thread::spawn(move || imputio_utils::event_bus::cleanup_task(garbage_bus));
+        std::thread::spawn(move || {
+            imputio_utils::event_bus::cleanup_task(garbage_bus, Duration::from_secs(2))
+        });
     }
 
     let subscriber: SubHandle<Packet<'_>> = handle.get_subscriber().await?;
@@ -139,14 +142,14 @@ async fn future_spam_with_event_bus(
         task.blocking_await().ok();
         // unsubscribe after the event matcher exists
         let id = subscriber.id();
-        tracing::info!("Non blocking Calling unsubscribe for subscriber id {id:}");
+        tracing::info!("Calling unsubscribe for subscriber id {id:}");
         if let Err(e) = subscriber.unsubscribe(id).await {
             tracing::error!("EventBusError on unsubscribe: {e:}");
         }
     };
 
     // spam a bunch of futures onto the runtime
-    spam_event_futures(std::time::Duration::from_millis(100), pub_one).await;
+    spam_event_futures(Duration::from_millis(100), pub_one).await;
 
     let _task = spawn!(fut, Priority::BestEffort);
 
@@ -156,7 +159,7 @@ async fn future_spam_with_event_bus(
     // spam yet more futures
     std::thread::spawn(move || {
         let fut = async move {
-            simulate_more_events(std::time::Duration::from_secs(7), pub_two).await;
+            simulate_more_events(Duration::from_secs(7), pub_two).await;
         };
         let task = spawn!(fut, Priority::High);
         task.blocking_await().ok();
@@ -177,7 +180,7 @@ async fn future_spam_with_event_bus(
     // spam yet more futures
     std::thread::spawn(move || {
         let fut = async move {
-            simulate_more_events(std::time::Duration::from_secs(7), pub_two).await;
+            simulate_more_events(Duration::from_secs(7), pub_two).await;
         };
         let task = spawn!(fut, Priority::High);
         task.blocking_await().ok();
@@ -198,7 +201,7 @@ async fn future_spam_with_event_bus(
 
     // demonstrate unsubscribing after exiting poll loop
     let id = subscriber_two.id();
-    tracing::info!("blocking Calling unsubscribe for subscriber id {id:}");
+    tracing::info!("Calling unsubscribe for subscriber id {id:}");
     if let Err(e) = subscriber_two.unsubscribe(id).await {
         tracing::error!("EventBusError on unsubscribe: {e:}");
     }

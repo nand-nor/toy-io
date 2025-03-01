@@ -2,18 +2,23 @@ pub mod handle;
 
 use std::{
     future::Future,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 #[derive(Clone, Debug)]
 pub struct ExecConfig {
     exec_thread_config: Vec<ExecThreadConfig>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Default for ExecConfig {
     fn default() -> Self {
         Self {
             exec_thread_config: vec![ExecThreadConfig::default()],
+            shutdown: Arc::new(AtomicBool::new(false)), // replaced later
         }
     }
 }
@@ -31,6 +36,11 @@ impl IntoIterator for ExecConfig {
 impl ExecConfig {
     pub fn with_cfg(mut self, exec_thread_config: Vec<ExecThreadConfig>) -> Self {
         self.exec_thread_config = exec_thread_config;
+        self
+    }
+
+    pub fn with_shutdown(mut self, shutdown: Arc<AtomicBool>) -> Self {
+        self.shutdown = shutdown;
         self
     }
 

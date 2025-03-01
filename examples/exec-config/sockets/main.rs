@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tx.send(())
     });
 
-    let _rt = ImputioRuntime::builder()
+    ImputioRuntime::builder()
         .with_exec_config(ExecConfig::default().with_cfg(execs))
         .shutdown((shutdown_tx, rx))
         .build()?

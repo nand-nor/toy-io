@@ -112,8 +112,12 @@ pub struct ImputioTaskHandle<T> {
 }
 
 impl<T> ImputioTaskHandle<T> {
-    pub fn spawn_await(self) -> Result<T, flume::RecvError> {
+    pub fn blocking_await(self) -> Result<T, flume::RecvError> {
         self.receiver.recv()
+    }
+
+    pub async fn async_await(&self) -> Result<T, flume::RecvError> {
+        self.receiver.recv_async().await
     }
 
     pub fn receiver(self) -> flume::Receiver<T> {

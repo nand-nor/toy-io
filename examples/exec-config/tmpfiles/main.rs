@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tx.send(())
     });
 
-    let _ = rt.block_on(async move {
+    rt.block_on(async move {
         spawn_fds(shutdown_rx, len, temp_dir).await;
     });
 

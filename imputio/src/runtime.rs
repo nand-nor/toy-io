@@ -41,6 +41,7 @@ pub struct ImputioRuntime {
     reserved_core_ids: Vec<usize>,
     runtime_core: Option<usize>,
     cfg: ExecConfig,
+    state: Arc<AtomicBool>,
 }
 
 impl ImputioRuntimeBuilder {
@@ -55,7 +56,8 @@ impl ImputioRuntimeBuilder {
 
         if self.cfg.is_none() {
             tracing::trace!("exec cfg is none, using defaults");
-            self.cfg = Some(ExecConfig::default());
+            let exec_cfg = ExecConfig::default().with_shutdown(Arc::new(AtomicBool::new(false)));
+            self.cfg = Some(exec_cfg);
         }
 
         if self.reserved_core_ids.is_none() {
@@ -66,6 +68,8 @@ impl ImputioRuntimeBuilder {
             self.runtime_core = Some(None);
         }
 
+        self.state = Some(Arc::new(AtomicBool::new(false)));
+
         let rt = self
             .build_impl()
             .map_err(|e| RuntimeError::Internal(format!("Invalid runtime builder args {e:}")))?;
@@ -75,7 +79,8 @@ impl ImputioRuntimeBuilder {
     /// Allow user to supply fine-grain control over
     /// which threads get pinned to what core, what their
     /// names are, stack size, etc.
-    pub fn with_exec_config(mut self, cfg: ExecConfig) -> Self {
+    pub fn with_exec_config(mut self, mut cfg: ExecConfig) -> Self {
+        cfg = cfg.with_shutdown(Arc::new(AtomicBool::new(false)));
         self.cfg = Some(cfg);
         self
     }
@@ -111,9 +116,11 @@ impl ImputioRuntimeBuilder {
             .collect::<Vec<_>>();
 
         let exec_cfg = if execs.is_empty() {
-            ExecConfig::default()
+            ExecConfig::default().with_shutdown(Arc::new(AtomicBool::new(false)))
         } else {
-            ExecConfig::default().with_cfg(execs)
+            ExecConfig::default()
+                .with_cfg(execs)
+                .with_shutdown(Arc::new(AtomicBool::new(false)))
         };
 
         self.cfg = Some(exec_cfg);
@@ -177,16 +184,13 @@ impl Debug for ImputioRuntime {
 impl ImputioRuntime {
     pub fn builder() -> ImputioRuntimeBuilder {
         ImputioRuntimeBuilder::default()
+            .with_exec_config(ExecConfig::default().with_shutdown(Arc::new(AtomicBool::new(false))))
     }
 
     pub fn new() -> Self {
-        Self {
-            reserved_core_ids: vec![],
-            exec_thread_id: thread::current().id(), // replaced later with exec thread id
-            shutdown: flume::bounded(1),
-            cfg: ExecConfig::default(),
-            runtime_core: None,
-        }
+        ImputioRuntime::builder()
+            .build()
+            .unwrap_or_else(|_| panic!("Unable to build imputio runtime"))
     }
 
     pub fn replace_shutdown_notifier(
@@ -202,6 +206,11 @@ impl ImputioRuntime {
     pub fn run(&mut self) -> Sender<()> {
         let (tx, rx) = self.shutdown.clone();
 
+        // dont re-run executor threads if already running
+        if self.state.swap(true, Ordering::SeqCst) {
+            return tx;
+        }
+
         if let Some(core_id) = self.runtime_core {
             tracing::trace!("Pinning main runtime to core {core_id:}");
             core_affinity::set_for_current(CoreId { id: core_id });
@@ -210,38 +219,45 @@ impl ImputioRuntime {
         let exec = Arc::new(ExecHandleCoordinator::initialize(self.cfg.clone()));
         crate::EXECUTOR.store(exec);
 
-        let handle = std::thread::spawn(move || loop {
-            let exec = crate::EXECUTOR.load();
-            exec.poll();
-            match rx.try_recv() {
-                Ok(()) => {
-                    tracing::warn!("Shutdown notice received");
-                    break;
-                }
-                Err(TryRecvError::Disconnected) => {
-                    // static var used to control only issuing this warning once
-                    // as this may be intentionally dropped by the caller
-                    static LOG: AtomicBool = AtomicBool::new(false);
-
-                    if !LOG.swap(true, Ordering::SeqCst) {
-                        // TODO should this be trace level?
-                        tracing::warn!("tx end of shutdown notice dropped");
+        let handle = std::thread::spawn(move || {
+            loop {
+                let exec = crate::EXECUTOR.load();
+                exec.poll();
+                match rx.try_recv() {
+                    Ok(()) => {
+                        tracing::warn!("Shutdown notice received");
+                        break;
                     }
-                    // TODO break-on-disconnect feature or build cfg option?
+                    Err(TryRecvError::Disconnected) => {
+                        // static var used to control only issuing this warning once
+                        // as this may be intentionally dropped by the caller
+                        static LOG: AtomicBool = AtomicBool::new(false);
+
+                        if !LOG.swap(true, Ordering::SeqCst) {
+                            // TODO should this be trace level?
+                            tracing::warn!("tx end of shutdown notice dropped");
+                        }
+                        // TODO break-on-disconnect feature or build cfg option?
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            let exec = crate::EXECUTOR.load();
+            exec.shutdown();
         });
         self.exec_thread_id = handle.thread().id();
         tracing::trace!("Running ImputioRuntime with cfg: {:?}", self.cfg);
         tx
     }
 
-    pub fn block_on<F, R>(self, fut: F) -> R
+    pub fn block_on<F, R>(mut self, fut: F) -> R
     where
         F: Future<Output = R> + Send + 'static,
         R: Send + 'static,
     {
+        // make sure runtime is running prior to spawning. Atomic bool
+        // tracks if runtime is already in running state
+        self.run();
         spawn_blocking!(fut)
     }
 }
@@ -320,9 +336,7 @@ mod tests {
         };
 
         let t_one = spawn!(one, Priority::High);
-
         let t_two = spawn!(async move { two.await }, Priority::Medium);
-
         let async_fn_task = spawn!(async { async_fn().await }, Priority::Low);
 
         let t_one_res = t_one.receiver().recv();
@@ -332,6 +346,7 @@ mod tests {
         assert_eq!(t_one_res, Ok(EXPECTED_EX_RET));
         assert_eq!(t_two_res, Ok(EXPECTED_OTHER_EX_RET));
         assert_eq!(async_fn_res, Ok(EXPECTED_ASYNC_RET));
+
         tx.send(()).expect("Failed to send shutdown");
         Ok(())
     }
