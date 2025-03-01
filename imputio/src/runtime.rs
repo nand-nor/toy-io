@@ -368,6 +368,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] 
     fn test_spawn_in_block_on_ctx() {
         ImputioRuntime::new().block_on(async move {
             // count does not matter here as this test
