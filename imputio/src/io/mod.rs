@@ -3,10 +3,12 @@
 //! as provided by mio dependency
 
 mod epoll;
-
 pub use epoll::{Operation, Poller, PollerCfg};
 
-use tracing::instrument;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum PollError {
@@ -51,9 +53,12 @@ impl PollHandle {
         Self { tx }
     }
 
-    pub fn initialize(poll_cfg: PollerCfg) -> Result<(PollerActor, PollHandle)> {
+    pub fn initialize(
+        poll_cfg: PollerCfg,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<(PollerActor, PollHandle)> {
         let (tx, rx) = flume::unbounded();
-        let poll_ring = PollerActor::new(rx, poll_cfg)?;
+        let poll_ring = PollerActor::new(rx, shutdown, poll_cfg)?;
         let handle = Self::new(tx);
         Ok((poll_ring, handle))
     }
@@ -99,6 +104,7 @@ impl PollHandle {
 pub struct PollerActor {
     receiver: flume::Receiver<IoOp>,
     poller: Poller,
+    shutdown: Arc<AtomicBool>,
 }
 
 unsafe impl Send for PollerActor {}
@@ -111,53 +117,69 @@ impl std::fmt::Debug for PollerActor {
 }
 
 impl PollerActor {
-    #[instrument]
-    pub fn new(receiver: flume::Receiver<IoOp>, poll_cfg: PollerCfg) -> Result<Self> {
+    pub fn new(
+        receiver: flume::Receiver<IoOp>,
+        shutdown: Arc<AtomicBool>,
+        poll_cfg: PollerCfg,
+    ) -> Result<Self> {
         Ok(Self {
             poller: Poller::new(poll_cfg)?,
             receiver,
+            shutdown,
         })
     }
 
-    #[instrument]
     pub fn run(mut self) {
         tracing::trace!(
-            "Running io poller actor thread id: {:?}, name  {:?}",
+            "Run io poller thread id: {:?}, name: {:?}",
             std::thread::current().id(),
             std::thread::current().name()
         );
 
-        while let Ok(event) = self.receiver.recv() {
-            match event {
-                IoOp::Submit { op } => self.submit(op).ok(),
-                IoOp::Poll => self.poll().ok(),
-                IoOp::Process => self.process().ok(),
-                IoOp::PollAndProcess => self.poll_and_process().ok(),
-            };
+        self.poller.set_id(std::thread::current().id());
+
+        loop {
+            if let Ok(event) = self.receiver.try_recv() {
+                match event {
+                    IoOp::Submit { op } => self.submit(op).ok(),
+                    IoOp::Poll => self.poll().ok(),
+                    IoOp::Process => self.process().ok(),
+                    IoOp::PollAndProcess => self.poll_and_process().ok(),
+                };
+            }
+
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
         }
+
+        self.shutdown();
     }
 
-    #[instrument]
+    fn shutdown(self) {
+        tracing::trace!(
+            "IO poller actor id {:?} shutting down",
+            std::thread::current().id()
+        );
+        self.poller.shutdown();
+    }
+
     fn submit(&mut self, op: Operation) -> Result<()> {
-        tracing::debug!("Received event");
         self.poller.push_token_entry(op)?;
         Ok(())
     }
 
-    #[instrument]
     fn poll_and_process(&mut self) -> Result<()> {
         self.poll()?;
         self.process()?;
         Ok(())
     }
 
-    #[instrument]
     fn poll(&mut self) -> Result<()> {
         self.poller.poll()?;
         Ok(())
     }
 
-    #[instrument]
     fn process(&mut self) -> Result<()> {
         // FIXME: process step only needed for io_uring
         Ok(())

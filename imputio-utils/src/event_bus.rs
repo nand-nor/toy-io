@@ -6,7 +6,7 @@ use flume::SendError;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::instrument;
 
-use imputio::{spawn, Priority};
+use imputio::spawn_blocking;
 
 #[derive(thiserror::Error, Debug)]
 pub enum EventBusError {
@@ -347,8 +347,7 @@ impl<T: Send + Clone> EventBusHandle<T> {
         let bus = EventBus::new(rx);
 
         std::thread::spawn(move || {
-            let task = spawn!(bus.run(), Priority::High);
-            task.receiver().recv().ok();
+            spawn_blocking!(bus.run());
         });
 
         let handle = EventBusHandle { tx, id: NULL_SUBID };
@@ -380,9 +379,10 @@ impl<T: Send + Clone> EventBusHandle<T> {
     }
 
     #[cfg(feature = "delay-delete")]
-    pub fn cleanup(&self) {
+    pub async fn cleanup(&self) {
         self.tx
-            .send(EventBusMessage::CleanUpBgTask)
+            .send_async(EventBusMessage::CleanUpBgTask)
+            .await
             .map_err(|e| {
                 tracing::error!("Send error: {e:}");
             })
@@ -410,18 +410,16 @@ impl<T: Send + Clone> Drop for SubHandle<T> {
 /// so was to not block the main runtime thread
 #[cfg(feature = "delay-delete")]
 #[instrument]
-pub fn cleanup_task<T: Send + Clone + 'static>(handle: EventBusHandle<T>) {
-    use std::{thread, time::Duration};
+pub fn cleanup_task<T: Send + Clone + 'static>(
+    handle: EventBusHandle<T>,
+    duration: std::time::Duration,
+) {
     let handle: &'static EventBusHandle<T> = Box::leak(Box::new(handle));
     std::thread::spawn(move || loop {
         tracing::trace!("Executing clean up logic on event bus");
-        let handle_c = handle.clone();
-        let handle = std::thread::spawn(move || {
-            handle_c.cleanup();
-            thread::yield_now();
-            thread::park_timeout(Duration::from_secs(5));
-        });
-        handle.join().ok();
+        spawn_blocking!(handle.cleanup());
+        std::thread::yield_now();
+        std::thread::park_timeout(duration);
     });
 }
 
