@@ -62,7 +62,7 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
             sleep_and_send_more_events(&publisher_two).await;
         };
         let task = imputio::spawn!(fut, Priority::High);
-        task.spawn_await().ok();
+        task.blocking_await().ok();
     });
 
     // These matcher function examples are what will be used to trigger
