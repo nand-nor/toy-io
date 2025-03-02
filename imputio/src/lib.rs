@@ -9,11 +9,15 @@ mod task;
 pub mod macros;
 
 use arc_swap::ArcSwap;
-use executor::{handle::ExecHandleCoordinator, ExecConfig};
+use executor::handle::ExecHandleCoordinator;
 
 use io::Operation;
 
-pub use executor::{imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking};
+pub use executor::{
+    imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, ExecConfig, ExecThreadConfig,
+    PollThreadConfig,
+};
+use runtime::ImputioRuntimeBuilder;
 pub use runtime::{ImputioRuntime, RuntimeError};
 pub use task::{ImputioTask, ImputioTaskHandle};
 
@@ -35,7 +39,10 @@ where
     F: std::future::Future<Output = R> + Send + 'static,
     R: Send + 'static,
 {
-    ImputioRuntime::new().block_on(fut)
+    ImputioRuntimeBuilder::default()
+        .build()
+        .unwrap_or_else(|_| panic!("Unable to startup imputio runtime"))
+        .block_on(fut)
 }
 
 /// Provides public method for registering TCP socket without having a handle to the

@@ -6,7 +6,7 @@ use flume::SendError;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::instrument;
 
-use imputio::{spawn, Priority};
+use imputio::spawn_blocking;
 
 #[derive(thiserror::Error, Debug)]
 pub enum EventBusError {
@@ -99,7 +99,7 @@ impl<T: Send + Clone> std::fmt::Debug for EventBus<T> {
 
 impl<T: Send + Clone> EventBus<T> {
     fn new(receiver: flume::Receiver<EventBusMessage<T>>) -> Self {
-        tracing::debug!("New event bus created");
+        tracing::trace!("New event bus created");
         let mut ids = HashSet::default();
         ids.extend((1..u16::MAX as SubId).collect::<Vec<_>>());
         Self {
@@ -164,23 +164,22 @@ impl<T: Send + Clone> EventBus<T> {
     /// background task, however that task must be run separately
     #[cfg(feature = "delay-delete")]
     async fn unsubscribe(&mut self, id: SubId) {
-        tracing::debug!("Pushing ID {id:} to unsubscribe list");
+        tracing::trace!("Pushing ID {id:} to unsubscribe list");
         self.recycle.push(id);
     }
 
     #[cfg(feature = "delay-delete")]
     async fn cleanup(&mut self) {
-        tracing::debug!("Calling cleanup for all unsubbed handles");
+        tracing::trace!("Calling cleanup for all unsubbed handles");
         let cleanup = self.recycle.clone();
         self.recycle.clear();
         for id in cleanup.iter() {
-            tracing::debug!("Cleaning up events from id {id:}");
+            tracing::trace!("Cleaning up events from id {id:}");
             self.event_queues.remove(id);
         }
     }
 
     async fn push_to_event_queues(&mut self, event: T) -> Result<()> {
-        tracing::trace!("Received event");
         for (_, v) in self.event_queues.iter_mut() {
             v.push_back(event.clone());
         }
@@ -347,10 +346,8 @@ impl<T: Send + Clone> EventBusHandle<T> {
         let (tx, rx) = flume::unbounded();
         let bus = EventBus::new(rx);
 
-        // TODO run this at system priority
         std::thread::spawn(move || {
-            let task = spawn!(bus.run(), Priority::High);
-            task.receiver().recv().ok();
+            spawn_blocking!(bus.run());
         });
 
         let handle = EventBusHandle { tx, id: NULL_SUBID };
@@ -382,9 +379,10 @@ impl<T: Send + Clone> EventBusHandle<T> {
     }
 
     #[cfg(feature = "delay-delete")]
-    pub fn cleanup(&self) {
+    pub async fn cleanup(&self) {
         self.tx
-            .send(EventBusMessage::CleanUpBgTask)
+            .send_async(EventBusMessage::CleanUpBgTask)
+            .await
             .map_err(|e| {
                 tracing::error!("Send error: {e:}");
             })
@@ -397,7 +395,6 @@ impl<T: Send + Clone> Drop for SubHandle<T> {
     fn drop(&mut self) {
         // handle with id 0 does not need to be unsubbed when dropped
         if self.id != NULL_SUBID {
-            tracing::debug!("Unsubbing for handle id {:?}", self.id);
             self.tx
                 .send(EventBusMessage::Unsubscribe { id: self.id })
                 .map_err(|e| {
@@ -413,18 +410,16 @@ impl<T: Send + Clone> Drop for SubHandle<T> {
 /// so was to not block the main runtime thread
 #[cfg(feature = "delay-delete")]
 #[instrument]
-pub fn cleanup_task<T: Send + Clone + 'static>(handle: EventBusHandle<T>) {
-    use std::{thread, time::Duration};
+pub fn cleanup_task<T: Send + Clone + 'static>(
+    handle: EventBusHandle<T>,
+    duration: std::time::Duration,
+) {
     let handle: &'static EventBusHandle<T> = Box::leak(Box::new(handle));
     std::thread::spawn(move || loop {
         tracing::trace!("Executing clean up logic on event bus");
-        let handle_c = handle.clone();
-        let handle = std::thread::spawn(move || {
-            handle_c.cleanup();
-            thread::yield_now();
-            thread::park_timeout(Duration::from_secs(5));
-        });
-        handle.join().ok();
+        spawn_blocking!(handle.cleanup());
+        std::thread::yield_now();
+        std::thread::park_timeout(duration);
     });
 }
 
@@ -481,7 +476,7 @@ where
     F: futures_lite::Future<Output = Result<O>> + 'a,
 {
     let id = handle.id();
-    tracing::debug!("event-consumer-{id:}: dropping into poll loop");
+    tracing::trace!("event-consumer-{id:}: dropping into poll loop");
     loop {
         let event = poll_fn(handle).await;
         if let Ok(event) = event {
