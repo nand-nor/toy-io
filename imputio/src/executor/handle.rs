@@ -2,9 +2,13 @@ use std::{
     collections::VecDeque,
     future::Future,
     pin::Pin,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
+use core_affinity::CoreId;
 #[cfg(feature = "fairness")]
 use rand::{self, Rng};
 
@@ -14,7 +18,7 @@ use crate::{
     Priority,
 };
 
-use super::{ExecConfig, ThreadConfig};
+use super::{ExecConfig, PollThreadConfig, ThreadConfig};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ExecError {
@@ -57,6 +61,7 @@ pub enum Transaction {
 pub struct ExecHandleCoordinator {
     handles: Vec<ExecHandle>,
     index: AtomicUsize,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl ExecHandleCoordinator {
@@ -65,21 +70,29 @@ impl ExecHandleCoordinator {
         Self {
             handles: vec![ExecHandle::new(tx)],
             index: AtomicUsize::new(0),
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn initialize(exec_cfg: ExecConfig) -> Self {
+        let shutdown = Arc::new(AtomicBool::new(false));
         let handles = exec_cfg
             .exec_thread_config
             .iter()
-            .filter_map(|(exec_handle_cfg, io_poller_cfg)| {
-                ExecHandle::initialize(exec_handle_cfg.clone(), io_poller_cfg.clone()).ok()
+            .filter_map(|cfg| {
+                ExecHandle::initialize(
+                    cfg.thread_cfg.clone(),
+                    cfg.poll_thread_cfg.clone(),
+                    Arc::clone(&shutdown),
+                )
+                .ok()
             })
             .collect::<Vec<_>>();
 
         Self {
             handles,
             index: AtomicUsize::new(0),
+            shutdown,
         }
     }
 
@@ -121,6 +134,10 @@ impl ExecHandleCoordinator {
 
         self.handles[index].submit_io_op(op)
     }
+
+    pub fn shutdown(&self) {
+        self.shutdown.swap(true, Ordering::SeqCst);
+    }
 }
 
 /// Defines handle to the [`Executor`]
@@ -135,11 +152,14 @@ impl ExecHandle {
         Self { tx }
     }
 
-    fn initialize(exec_cfg: ThreadConfig, poller_cfg: ThreadConfig) -> Result<Self> {
+    fn initialize(
+        exec_cfg: ThreadConfig,
+        poller_cfg: PollThreadConfig,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<Self> {
         let (tx, rx) = flume::unbounded();
         let handle = Self::new(tx);
-
-        let exec = Executor::initialize(rx, poller_cfg)?;
+        let exec = Executor::initialize(rx, poller_cfg, shutdown)?;
 
         std::thread::Builder::new()
             .name(exec_cfg.thread_name)
@@ -147,7 +167,7 @@ impl ExecHandle {
             //.no_hooks()
             .spawn(move || {
                 if let Some(core) = exec_cfg.core_id {
-                    core_affinity::set_for_current(core);
+                    core_affinity::set_for_current(CoreId { id: core });
                 }
                 exec.run()
             })?;
@@ -159,7 +179,7 @@ impl ExecHandle {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = flume::bounded(1);
 
         let spawn_fut = Box::pin(async move {
             let res = fut.await;
@@ -219,26 +239,25 @@ pub struct Executor {
     tasks: [VecDeque<crate::task::ImputioTask>; 5],
     rx: flume::Receiver<Transaction>,
     poll_handle: PollHandle,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Executor {
-    fn initialize(rx: flume::Receiver<Transaction>, cfg: ThreadConfig) -> Result<Self> {
-        tracing::debug!(
-            "Running executor actor thread id: {:?}, name  {:?}",
-            std::thread::current().id(),
-            std::thread::current().name()
-        );
-
+    fn initialize(
+        rx: flume::Receiver<Transaction>,
+        cfg: PollThreadConfig,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<Self> {
         // FIXME: allow runtime with build options to specify size of poll cfg event queue
-        let (actor, handle) = PollHandle::initialize(cfg.poll_cfg)?;
+        let (actor, handle) = PollHandle::initialize(cfg.poll_cfg, Arc::clone(&shutdown))?;
 
         std::thread::Builder::new()
-            .name(cfg.thread_name)
-            .stack_size(cfg.stack_size)
+            .name(cfg.thread_cfg.thread_name)
+            .stack_size(cfg.thread_cfg.stack_size)
             //.no_hooks()
             .spawn(move || {
-                if let Some(core) = cfg.core_id {
-                    core_affinity::set_for_current(core);
+                if let Some(core) = cfg.thread_cfg.core_id {
+                    core_affinity::set_for_current(CoreId { id: core });
                 }
                 actor.run()
             })?;
@@ -246,6 +265,7 @@ impl Executor {
             poll_handle: handle,
             rx,
             tasks: [(); 5].map(|_| VecDeque::new()),
+            shutdown,
         })
     }
 
@@ -270,6 +290,12 @@ impl Executor {
     }
 
     pub fn poll(&mut self) {
+        if let Err(e) = self.poll_handle.poll() {
+            tracing::error!("Error polling io poller {e:}");
+        } else {
+            self.poll_handle.process().ok();
+        }
+
         if let Some(mut task) = self.get_task() {
             match task.poll_task() {
                 std::task::Poll::Ready(_val) => {}
@@ -277,12 +303,6 @@ impl Executor {
                     self.tasks[task.priority as usize].push_back(task);
                 }
             };
-        }
-
-        if let Err(e) = self.poll_handle.poll() {
-            tracing::error!("Error polling io poller {e:}");
-        } else {
-            self.poll_handle.process().ok();
         }
     }
 
@@ -296,16 +316,31 @@ impl Executor {
         self.poll_handle.clone()
     }
 
-    #[tracing::instrument]
     fn run(mut self) {
-        while let Ok(event) = self.rx.recv() {
-            match event {
-                Transaction::Poll => self.poll(),
-                Transaction::Spawn { task } => self.spawn(task),
-                Transaction::SubmitIoOp { op, reply } => {
-                    let _ = reply.send(self.push_to_poller(op));
-                }
-            };
+        tracing::trace!(
+            "Running executor actor thread id: {:?}, name  {:?}",
+            std::thread::current().id(),
+            std::thread::current().name()
+        );
+
+        loop {
+            if let Ok(event) = self.rx.try_recv() {
+                match event {
+                    Transaction::Poll => self.poll(),
+                    Transaction::Spawn { task } => self.spawn(task),
+                    Transaction::SubmitIoOp { op, reply } => {
+                        let _ = reply.send(self.push_to_poller(op));
+                    }
+                };
+            }
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
         }
+
+        tracing::trace!(
+            "executor id {:?} shutting down",
+            std::thread::current().id()
+        );
     }
 }

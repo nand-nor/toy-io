@@ -4,16 +4,17 @@ use std::{
     collections::HashMap,
     net::TcpListener as StdTcpListener,
     os::fd::{AsRawFd, RawFd},
+    thread::ThreadId,
 };
 
 use super::PollError;
 
 #[derive(Debug, Clone)]
-pub struct PollCfg {
+pub struct PollerCfg {
     event_size: usize,
 }
 
-impl Default for PollCfg {
+impl Default for PollerCfg {
     fn default() -> Self {
         Self { event_size: 256 }
     }
@@ -60,12 +61,13 @@ const RW_INTERESTS: Interest = Interest::READABLE
 pub struct Poller {
     poller: EPoller,
     events: Events,
-    ids: HashMap<RawFd, (usize, Option<flume::Sender<Event>>)>,
+    event_src_ids: HashMap<RawFd, (usize, Option<flume::Sender<Event>>)>,
     tokens: Slab<Operation>,
+    id: ThreadId,
 }
 
 impl Poller {
-    pub fn new(cfg: PollCfg) -> Result<Self> {
+    pub fn new(cfg: PollerCfg) -> Result<Self> {
         let poller: mio::Poll = mio::Poll::new()?;
         let events = Events::with_capacity(cfg.event_size);
 
@@ -73,8 +75,22 @@ impl Poller {
             poller,
             events,
             tokens: Slab::new(),
-            ids: HashMap::new(),
+            event_src_ids: HashMap::new(),
+            id: std::thread::current().id(),
         })
+    }
+
+    pub fn set_id(&mut self, id: ThreadId) {
+        self.id = id;
+    }
+
+    pub fn shutdown(mut self) {
+        //let _ = self.poller;
+        self.events.clear();
+        drop(self.poller);
+        drop(self.tokens);
+        drop(self.events);
+        drop(self.event_src_ids);
     }
 
     pub fn poll(&mut self) -> Result<()> {
@@ -84,11 +100,12 @@ impl Poller {
         for event in self.events.iter() {
             if let Some(op) = self.tokens.get(event.token().0) {
                 match op {
-                    Operation::RegistrationFdAdd { notify, .. } => {
-                        tracing::debug!("Adding modified event! {event:?}");
+                    Operation::RegistrationFdAdd { fd, notify, .. } => {
+                        tracing::trace!("FD {fd:?} event triggered: {event:?}");
 
                         if let Some(notify) = notify {
                             if let Err(e) = notify.send(event.clone()) {
+                                // todo remove / unregister if this is dropped?
                                 tracing::error!("Error sending to user-supplied notifier {e:}");
                             }
                         }
@@ -96,10 +113,11 @@ impl Poller {
                     Operation::ModifyRegistration { .. } => todo!(),
                     Operation::DeleteRegistration { .. } => todo!(),
                     Operation::RegistrationTcpAdd { notify, .. } => {
-                        tracing::debug!("Adding tcp socket! {event:?}");
+                        tracing::trace!("tcp socket {event:?}");
 
                         if let Some(notify) = notify {
                             if let Err(e) = notify.send(event.clone()) {
+                                // todo remove / unregister if this is dropped?
                                 tracing::error!("Error sending to user-supplied notifier {e:}");
                             }
                         }
@@ -112,13 +130,14 @@ impl Poller {
     }
 
     pub fn push_token_entry(&mut self, op: Operation) -> Result<()> {
+        tracing::trace!("Poller ID {:?} pushing new io operation", self.id);
         match op {
             Operation::RegistrationFdAdd {
                 fd,
                 interest,
                 notify,
             } => {
-                let id = if let Some((id, existing_notify)) = self.ids.get(&fd) {
+                let id = if let Some((id, existing_notify)) = self.event_src_ids.get(&fd) {
                     // FIXME!! dont use direct index access lest this panic
                     let token = &mut self.tokens[*id];
                     *token = Operation::RegistrationFdAdd {
@@ -129,7 +148,7 @@ impl Poller {
                     *id
                 } else {
                     let new_id = self.tokens.vacant_entry().key();
-                    self.ids.insert(fd, (new_id, None));
+                    self.event_src_ids.insert(fd, (new_id, None));
                     self.tokens.insert(Operation::RegistrationFdAdd {
                         fd,
                         interest,
@@ -149,7 +168,7 @@ impl Poller {
                 interest,
                 notify,
             } => {
-                let id = if let Some((id, existing_notify)) = self.ids.get(&fd) {
+                let id = if let Some((id, existing_notify)) = self.event_src_ids.get(&fd) {
                     // FIXME!! dont use direct index access lest this panic
                     let token = &mut self.tokens[*id];
                     *token = Operation::ModifyRegistration {
@@ -160,7 +179,7 @@ impl Poller {
                     *id
                 } else {
                     let new_id = self.tokens.vacant_entry().key();
-                    self.ids.insert(fd, (new_id, None));
+                    self.event_src_ids.insert(fd, (new_id, None));
                     self.tokens.insert(Operation::ModifyRegistration {
                         fd,
                         interest,
@@ -170,7 +189,7 @@ impl Poller {
                 };
 
                 if let Some(notify) = notify {
-                    self.ids.insert(fd, (id, Some(notify)));
+                    self.event_src_ids.insert(fd, (id, Some(notify)));
                 }
             }
             Operation::DeleteRegistration { .. } => todo!(),
@@ -180,25 +199,27 @@ impl Poller {
                 notify,
             } => {
                 let raw_fd = fd.as_raw_fd();
-                let new_event_id = if let Some((id, existing_notify)) = self.ids.get(&raw_fd) {
-                    // TODO!! dont use direct index access left this panic
-                    let token = &mut self.tokens[*id];
-                    *token = Operation::RegistrationTcpAdd {
-                        fd: fd.try_clone()?,
-                        interest,
-                        notify: existing_notify.clone(),
+
+                let new_event_id =
+                    if let Some((id, existing_notify)) = self.event_src_ids.get(&raw_fd) {
+                        // TODO!! dont use direct index access left this panic
+                        let token = &mut self.tokens[*id];
+                        *token = Operation::RegistrationTcpAdd {
+                            fd: fd.try_clone()?,
+                            interest,
+                            notify: existing_notify.clone(),
+                        };
+                        *id
+                    } else {
+                        let new_id = self.tokens.vacant_entry().key();
+                        self.event_src_ids.insert(raw_fd, (new_id, notify.clone()));
+                        self.tokens.insert(Operation::RegistrationTcpAdd {
+                            fd: fd.try_clone()?,
+                            interest,
+                            notify,
+                        });
+                        new_id
                     };
-                    *id
-                } else {
-                    let new_id = self.tokens.vacant_entry().key();
-                    self.ids.insert(raw_fd, (new_id, notify.clone()));
-                    self.tokens.insert(Operation::RegistrationTcpAdd {
-                        fd: fd.try_clone()?,
-                        interest,
-                        notify,
-                    });
-                    new_id
-                };
 
                 let mut mio_tcp = TcpListener::from_std(fd);
 

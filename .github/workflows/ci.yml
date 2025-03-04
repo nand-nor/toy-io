@@ -39,7 +39,7 @@ jobs:
 
       - name: test check
         run: |
-          cargo test
+          cargo test -- --nocapture --test-threads=1
 
   clippy:
     name: Clippy
