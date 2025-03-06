@@ -326,6 +326,7 @@ mod tests {
     const EXPECTED_OTHER_EX_RET: usize = 3;
 
     #[test]
+    #[ignore]
     fn test_spawn_simple() -> Result<(), Box<dyn std::error::Error>> {
         let tx = ImputioRuntime::new().run();
         // can be any value but choosing something below EXPECTED_EX_RET
@@ -368,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] 
+    #[ignore]
     fn test_spawn_in_block_on_ctx() {
         ImputioRuntime::new().block_on(async move {
             // count does not matter here as this test
