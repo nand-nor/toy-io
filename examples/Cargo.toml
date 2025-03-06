@@ -14,7 +14,6 @@ imputio.workspace=true
 mio.workspace=true
 tracing-subscriber = { version="0.3.0", features=["env-filter"]}
 core_affinity.workspace=true
-tempfile = "3.17.1"
 
 [features]
 delay-delete=["imputio-utils/delay-delete"]
@@ -42,7 +41,3 @@ path = "./exec-config/events/main.rs"
 [[example]]
 name = "config-sockets"
 path = "./exec-config/sockets/main.rs"
-
-[[example]]
-name = "config-files"
-path = "./exec-config/tmpfiles/main.rs"
