@@ -129,6 +129,7 @@ impl PollerActor {
         })
     }
 
+    #[inline]
     pub fn run(mut self) {
         tracing::trace!(
             "Run io poller thread id: {:?}, name: {:?}",
@@ -164,22 +165,26 @@ impl PollerActor {
         self.poller.shutdown();
     }
 
+    #[inline]
     fn submit(&mut self, op: Operation) -> Result<()> {
         self.poller.push_token_entry(op)?;
         Ok(())
     }
 
+    #[inline]
     fn poll_and_process(&mut self) -> Result<()> {
         self.poll()?;
         self.process()?;
         Ok(())
     }
 
+    #[inline]
     fn poll(&mut self) -> Result<()> {
         self.poller.poll()?;
         Ok(())
     }
 
+    #[inline]
     fn process(&mut self) -> Result<()> {
         // FIXME: process step only needed for io_uring
         Ok(())

@@ -74,6 +74,7 @@ impl ExecHandleCoordinator {
         }
     }
 
+    #[inline]
     pub fn initialize(exec_cfg: ExecConfig) -> Self {
         let shutdown = Arc::new(AtomicBool::new(false));
         let handles = exec_cfg
@@ -96,6 +97,7 @@ impl ExecHandleCoordinator {
         }
     }
 
+    #[inline]
     pub fn spawn<F, T>(&self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
@@ -121,6 +123,7 @@ impl ExecHandleCoordinator {
         task.run()
     }
 
+    #[inline]
     pub fn poll(&self) {
         let index = (self.index.load(Ordering::SeqCst) + 1) % self.handles.len();
         self.index.store(index, Ordering::SeqCst);
@@ -152,6 +155,7 @@ impl ExecHandle {
         Self { tx }
     }
 
+    #[inline]
     fn initialize(
         exec_cfg: ThreadConfig,
         poller_cfg: PollThreadConfig,
@@ -174,6 +178,7 @@ impl ExecHandle {
         Ok(handle)
     }
 
+    #[inline]
     pub fn spawn<F, T>(&self, fut: F, priority: Priority) -> ImputioTaskHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
@@ -211,6 +216,7 @@ impl ExecHandle {
         task.run()
     }
 
+    #[inline]
     pub fn poll(&self) {
         self.tx
             .send(Transaction::Poll)
@@ -243,12 +249,12 @@ pub struct Executor {
 }
 
 impl Executor {
+    #[inline]
     fn initialize(
         rx: flume::Receiver<Transaction>,
         cfg: PollThreadConfig,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Self> {
-        // FIXME: allow runtime with build options to specify size of poll cfg event queue
         let (actor, handle) = PollHandle::initialize(cfg.poll_cfg, Arc::clone(&shutdown))?;
 
         std::thread::Builder::new()
@@ -269,12 +275,14 @@ impl Executor {
         })
     }
 
+    #[inline]
     fn spawn(&mut self, task: ImputioTask) {
         self.tasks[task.priority as usize].push_back(task);
     }
 
     /// Iterates through all of the task vectors (starting with highest priority)
     /// and returns the first one found where is_some is true. Otherwise returns None
+    #[inline]
     pub fn get_task(&mut self) -> Option<ImputioTask> {
         #[cfg(feature = "fairness")]
         {
@@ -289,6 +297,7 @@ impl Executor {
         self.tasks.iter_mut().find_map(|q| q.pop_front())
     }
 
+    #[inline]
     pub fn poll(&mut self) {
         if let Err(e) = self.poll_handle.poll() {
             tracing::error!("Error polling io poller {e:}");
@@ -306,6 +315,7 @@ impl Executor {
         }
     }
 
+    #[inline]
     fn push_to_poller(&self, token: Operation) -> Result<()> {
         self.poll_handle.submit_op(token)?;
         Ok(())
@@ -316,6 +326,7 @@ impl Executor {
         self.poll_handle.clone()
     }
 
+    #[inline]
     fn run(mut self) {
         tracing::trace!(
             "Running executor actor thread id: {:?}, name  {:?}",

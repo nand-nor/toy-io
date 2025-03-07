@@ -54,6 +54,7 @@ impl Debug for ImputioTask {
 }
 
 impl<T> ImputioTask<T> {
+    #[inline]
     pub fn new(future: Pin<Box<dyn Future<Output = T> + Send>>, priority: Priority) -> Self {
         let (waker, _inner) = ImputioWaker::new_waker_inner_ptr();
         let inner_task = Arc::into_raw(Arc::new(InnerTask::<T>::new(future)));
@@ -65,6 +66,7 @@ impl<T> ImputioTask<T> {
         }
     }
 
+    #[inline]
     pub fn poll_task(&mut self) -> Poll<T> {
         let waker = self.waker.clone();
         let mut cx = Context::from_waker(&waker);
@@ -73,6 +75,7 @@ impl<T> ImputioTask<T> {
     }
 
     /// run the future this task is holding to completion (blocking)
+    #[inline]
     pub fn run(self) -> T {
         tracing::debug!("running ImputioTask to completion");
         let waker = self.waker.clone();
