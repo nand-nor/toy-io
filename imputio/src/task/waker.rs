@@ -1,5 +1,8 @@
 use std::{
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     task::{RawWaker, RawWakerVTable, Waker},
 };
 
@@ -47,16 +50,12 @@ impl ImputioWaker {
 
     #[inline]
     pub fn unpark(inner: &ImputioTaskHeader) {
-        inner
-            .parked
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        inner.parked.store(false, Ordering::SeqCst);
     }
 
     #[allow(unused)]
     pub fn park(inner: &ImputioTaskHeader) {
-        inner
-            .parked
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        inner.parked.store(true, Ordering::SeqCst);
     }
 
     #[inline]

@@ -4,10 +4,12 @@ pub(crate) use waker::ImputioWaker;
 
 use futures_lite::FutureExt;
 use std::{
-    fmt::Debug,
+    fmt::{self, Debug, Formatter},
     future::Future,
-    marker::PhantomData,
+    marker::{PhantomData, Unpin},
+    ops::{Deref, DerefMut},
     pin::Pin,
+    ptr::NonNull,
     sync::Arc,
     task::{Context, Poll, Waker},
 };
@@ -37,7 +39,7 @@ impl<T> InnerTask<T> {
 }
 
 pub struct ImputioTask<T = ()> {
-    inner_task: std::ptr::NonNull<()>,
+    inner_task: NonNull<()>,
     phantom: PhantomData<T>,
     pub(crate) waker: Waker,
     pub(crate) priority: Priority,
@@ -46,7 +48,7 @@ unsafe impl Send for ImputioTask {}
 unsafe impl Sync for ImputioTask {}
 
 impl Debug for ImputioTask {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImputioTask")
             .field("priority", &self.priority)
             .finish()
@@ -59,7 +61,7 @@ impl<T> ImputioTask<T> {
         let (waker, _inner) = ImputioWaker::new_waker_inner_ptr();
         let inner_task = Arc::into_raw(Arc::new(InnerTask::<T>::new(future)));
         Self {
-            inner_task: unsafe { std::ptr::NonNull::new_unchecked(inner_task as *mut ()) },
+            inner_task: unsafe { NonNull::new_unchecked(inner_task as *mut ()) },
             phantom: PhantomData,
             waker,
             priority,
@@ -70,30 +72,44 @@ impl<T> ImputioTask<T> {
     pub fn poll_task(&mut self) -> Poll<T> {
         let waker = self.waker.clone();
         let mut cx = Context::from_waker(&waker);
-        let inner_task = unsafe { &mut *(self.inner_task.as_ptr() as *mut InnerTask<_>) };
+        let inner_task = self.deref_mut();
         inner_task.poll(&mut cx)
     }
 
     /// run the future this task is holding to completion (blocking)
     #[inline]
-    pub fn run(self) -> T {
+    pub fn run(mut self) -> T {
         tracing::debug!("running ImputioTask to completion");
         let waker = self.waker.clone();
         let mut cx = Context::from_waker(&waker);
-        let inner_task = unsafe { &mut *(self.inner_task.as_ptr() as *mut InnerTask<_>) };
+        let inner_task = self.deref_mut();
         inner_task.run(&mut cx)
+    }
+}
+
+impl<T> Deref for ImputioTask<T> {
+    type Target = InnerTask<T>;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(self.inner_task.as_ptr() as *const InnerTask<T>) }
+    }
+}
+
+impl<T> DerefMut for ImputioTask<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *(self.inner_task.as_ptr() as *mut InnerTask<T>) }
     }
 }
 
 impl<T> Future for ImputioTask<T>
 where
-    T: Send + 'static + std::marker::Unpin,
+    T: Unpin,
 {
     type Output = <InnerTask<T> as Future>::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let s = self.get_mut();
-        let inner_task = unsafe { &mut *(s.inner_task.as_ptr() as *mut InnerTask<Self::Output>) };
+        let inner_task = s.deref_mut();
         inner_task.poll(cx)
     }
 }
