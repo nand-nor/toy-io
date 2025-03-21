@@ -4,7 +4,8 @@ use std::{
     collections::HashMap,
     net::TcpListener as StdTcpListener,
     os::fd::{AsRawFd, RawFd},
-    thread::ThreadId,
+    thread::{self, ThreadId},
+    time::Duration,
 };
 
 use super::PollError;
@@ -76,7 +77,7 @@ impl Poller {
             events,
             tokens: Slab::new(),
             event_src_ids: HashMap::new(),
-            id: std::thread::current().id(),
+            id: thread::current().id(),
         })
     }
 
@@ -94,7 +95,7 @@ impl Poller {
 
     pub fn poll(&mut self) -> Result<()> {
         self.poller
-            .poll(&mut self.events, Some(std::time::Duration::from_millis(10)))?;
+            .poll(&mut self.events, Some(Duration::from_millis(10)))?;
 
         for event in self.events.iter() {
             if let Some(op) = self.tokens.get(event.token().0) {

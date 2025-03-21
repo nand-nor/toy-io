@@ -60,11 +60,9 @@ async fn event_bus_example() -> Result<(), Box<dyn std::error::Error + Send + Sy
 
     // spawn a separate thread to simulate delayed packet send events
     std::thread::spawn(move || {
-        let fut = async move {
+        imputio::spawn_blocking!(async move {
             sleep_and_send_more_events(&publisher_two).await;
-        };
-        let task = imputio::spawn!(fut, Priority::High);
-        task.blocking_await().ok();
+        });
     });
 
     // These matcher function examples are what will be used to trigger

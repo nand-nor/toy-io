@@ -1,5 +1,5 @@
 use std::{
-    fmt::Debug,
+    fmt::{self, Debug},
     future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -171,7 +171,7 @@ impl Default for ImputioRuntime {
 }
 
 impl Debug for ImputioRuntime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImputioRuntime")
             .field("exec_thread_id", &self.exec_thread_id)
             .field("shutdown", &self.shutdown)
@@ -267,6 +267,7 @@ mod tests {
     use super::*;
     use std::{
         future::{Future, IntoFuture},
+        mem, panic,
         pin::Pin,
         task::{Context, Poll},
     };
@@ -376,7 +377,7 @@ mod tests {
             // is checking for panics to arise when expected
             let ex = ExampleTask { count: 0 };
 
-            let result = std::panic::catch_unwind(|| spawn_blocking!(ex));
+            let result = panic::catch_unwind(|| spawn_blocking!(ex));
             assert!(result.is_err());
         });
     }
@@ -418,8 +419,8 @@ mod tests {
             .expect("Expected to succeed build")
             .run();
 
-        let mut set = unsafe { std::mem::zeroed::<cpu_set_t>() };
-        assert!(unsafe { sched_getaffinity(0, std::mem::size_of::<cpu_set_t>(), &mut set) } == 0);
+        let mut set = unsafe { mem::zeroed::<cpu_set_t>() };
+        assert!(unsafe { sched_getaffinity(0, mem::size_of::<cpu_set_t>(), &mut set) } == 0);
         assert!(unsafe { CPU_ISSET(cpu, &set) });
         tx.send(()).expect("Failed to send shutdown");
     }

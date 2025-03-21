@@ -6,6 +6,9 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
+    task::Poll,
+    thread::{self, park_timeout},
+    time::Duration,
 };
 
 use core_affinity::CoreId;
@@ -74,22 +77,25 @@ impl ExecHandleCoordinator {
         }
     }
 
+    /// # Panics
+    ///
+    /// This function will panic if the provided configuration
+    /// is invalid or otherwise unsupported by the OS
     #[inline]
     pub fn initialize(exec_cfg: ExecConfig) -> Self {
         let shutdown = Arc::new(AtomicBool::new(false));
         let handles = exec_cfg
             .exec_thread_config
             .iter()
-            .filter_map(|cfg| {
+            .map(|cfg| {
                 ExecHandle::initialize(
                     cfg.thread_cfg.clone(),
                     cfg.poll_thread_cfg.clone(),
                     Arc::clone(&shutdown),
                 )
-                .ok()
+                .expect("Failed to initialize with provided parameters")
             })
             .collect::<Vec<_>>();
-
         Self {
             handles,
             index: AtomicUsize::new(0),
@@ -163,12 +169,11 @@ impl ExecHandle {
     ) -> Result<Self> {
         let (tx, rx) = flume::unbounded();
         let handle = Self::new(tx);
-        let exec = Executor::initialize(rx, poller_cfg, shutdown)?;
+        let exec = Executor::initialize(rx, poller_cfg, shutdown, exec_cfg.parking)?;
 
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name(exec_cfg.thread_name)
             .stack_size(exec_cfg.stack_size)
-            //.no_hooks()
             .spawn(move || {
                 if let Some(core) = exec_cfg.core_id {
                     core_affinity::set_for_current(CoreId { id: core });
@@ -246,6 +251,7 @@ pub struct Executor {
     rx: flume::Receiver<Transaction>,
     poll_handle: PollHandle,
     shutdown: Arc<AtomicBool>,
+    parking: Option<u64>,
 }
 
 impl Executor {
@@ -254,13 +260,15 @@ impl Executor {
         rx: flume::Receiver<Transaction>,
         cfg: PollThreadConfig,
         shutdown: Arc<AtomicBool>,
+        parking: Option<u64>,
     ) -> Result<Self> {
-        let (actor, handle) = PollHandle::initialize(cfg.poll_cfg, Arc::clone(&shutdown))?;
+        let io_thread_parking = cfg.clone().parking();
+        let (actor, handle) =
+            PollHandle::initialize(cfg.poll_cfg, Arc::clone(&shutdown), io_thread_parking)?;
 
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name(cfg.thread_cfg.thread_name)
             .stack_size(cfg.thread_cfg.stack_size)
-            //.no_hooks()
             .spawn(move || {
                 if let Some(core) = cfg.thread_cfg.core_id {
                     core_affinity::set_for_current(CoreId { id: core });
@@ -272,6 +280,7 @@ impl Executor {
             rx,
             tasks: [(); 5].map(|_| VecDeque::new()),
             shutdown,
+            parking,
         })
     }
 
@@ -307,8 +316,8 @@ impl Executor {
 
         if let Some(mut task) = self.get_task() {
             match task.poll_task() {
-                std::task::Poll::Ready(_val) => {}
-                std::task::Poll::Pending => {
+                Poll::Ready(_val) => {}
+                Poll::Pending => {
                     self.tasks[task.priority as usize].push_back(task);
                 }
             };
@@ -330,8 +339,8 @@ impl Executor {
     fn run(mut self) {
         tracing::trace!(
             "Running executor actor thread id: {:?}, name  {:?}",
-            std::thread::current().id(),
-            std::thread::current().name()
+            thread::current().id(),
+            thread::current().name()
         );
 
         loop {
@@ -343,15 +352,14 @@ impl Executor {
                         let _ = reply.send(self.push_to_poller(op));
                     }
                 };
+            } else if let Some(park) = self.parking {
+                park_timeout(Duration::from_millis(park));
             }
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
             }
         }
 
-        tracing::trace!(
-            "executor id {:?} shutting down",
-            std::thread::current().id()
-        );
+        tracing::trace!("executor id {:?} shutting down", thread::current().id());
     }
 }
