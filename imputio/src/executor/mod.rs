@@ -165,6 +165,7 @@ impl PollThreadConfig {
 
 use crate::{io::PollerCfg, ImputioTaskHandle};
 
+#[inline]
 pub fn imputio_spawn<F, T>(fut: F, priority: crate::Priority) -> ImputioTaskHandle<T>
 where
     F: Future<Output = T> + Send + 'static,
@@ -178,6 +179,7 @@ where
 ///
 /// If spawn_blocking is called in a blocking context, the thread will
 /// panic
+#[inline]
 pub fn imputio_spawn_blocking<F, T>(fut: F) -> T
 where
     F: Future<Output = T> + Send + 'static,

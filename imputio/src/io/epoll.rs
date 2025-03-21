@@ -85,7 +85,6 @@ impl Poller {
     }
 
     pub fn shutdown(mut self) {
-        //let _ = self.poller;
         self.events.clear();
         drop(self.poller);
         drop(self.tokens);
