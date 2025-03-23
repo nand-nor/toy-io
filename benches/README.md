@@ -12,8 +12,9 @@ Configurations that are benchmarked include:
 - varying if executor and io poller threads are assigned a core affinity
 - others TBD
 
-Note: in order to run, may need to set open file limit to something greater than typical default via
+Note: in order to run these benchmarks, may need to set open file limit to something greater than typical default via
 ```bash
 ulimit -n 10000
 ```
-Where caller should set some appropriate limit (10000 is just a recommendation)
+Where caller should set some appropriate limit (10000 is just a recommendation). Callers may also need to set
+other appropriate rlimits depending on system

@@ -63,78 +63,116 @@ async fn do_some_tcp_io() {
 struct BenchSetup {
     start_core: Option<usize>,
     bench_core: Option<usize>,
-    // if none, no parking
-    with_parking: Option<u64>,
-    /// If is_none evals to
-    /// true, then use all avail
-    available_cores: Option<Vec<CoreId>>,
+    /// if none, no io parking
+    with_io_parking: Option<u64>,
+    /// if none, no exec parking
+    with_exec_parking: Option<u64>,
     with_core_affin: bool,
 }
 
 fn thread_setup(setup: BenchSetup) -> Vec<ExecThreadConfig> {
-    let available_cores = if setup.available_cores.is_none() {
-        let available_cores = core_affinity::get_core_ids().unwrap_or_default();
-        available_cores
-    } else {
-        setup.available_cores.unwrap()
-    };
-
     let mut start = if setup.start_core.is_none() {
         0
     } else {
         setup.start_core.unwrap()
     };
 
-    if !available_cores.is_empty() && setup.with_core_affin && setup.bench_core.is_some() {
-        core_affinity::set_for_current(available_cores[setup.bench_core.unwrap()]);
+    let num_cores = num_cpus::get();
+
+    if setup.with_core_affin && setup.bench_core.is_some() {
+        core_affinity::set_for_current(CoreId {
+            id: setup.bench_core.unwrap(),
+        });
         if start == setup.bench_core.unwrap() {
             start += 1;
         }
     }
 
-    if available_cores.is_empty() {
-        // dont run bench if no available cores
-        panic!()
+    if start >= num_cores {
+        start = 0;
     }
 
-    available_cores[start..]
-        .iter()
-        .map(|core| match (setup.with_core_affin, setup.with_parking) {
-            (true, Some(timeout)) => {
-                let poller_cfg = PollThreadConfig::default()
-                    .with_parking(timeout)
-                    .with_core_affinity(core.id)
-                    .with_name(format!("imputio-io-{:?}", core.id));
-                ExecThreadConfig::default()
-                    .with_core_affinity(core.id)
-                    .with_parking(timeout)
-                    .with_poll_thread_cfg(poller_cfg)
-                    .with_name(format!("imputio-exec-{:?}", core.id))
-            }
-            (false, Some(timeout)) => {
-                let poller_cfg = PollThreadConfig::default()
-                    .with_parking(timeout)
-                    .with_name(format!("imputio-io-{:?}", core.id));
-                ExecThreadConfig::default()
-                    .with_parking(timeout)
-                    .with_poll_thread_cfg(poller_cfg)
-                    .with_name(format!("imputio-exec-{:?}", core.id))
-            }
-            (true, None) => {
-                let poller_cfg = PollThreadConfig::default()
-                    .with_core_affinity(core.id)
-                    .with_name(format!("imputio-io-{:?}", core.id));
-                ExecThreadConfig::default()
-                    .with_core_affinity(core.id)
-                    .with_poll_thread_cfg(poller_cfg)
-                    .with_name(format!("imputio-exec-{:?}", core.id))
-            }
-            (false, None) => {
-                let poller_cfg =
-                    PollThreadConfig::default().with_name(format!("imputio-io-{:?}", core.id));
-                ExecThreadConfig::default()
-                    .with_poll_thread_cfg(poller_cfg)
-                    .with_name(format!("imputio-exec-{:?}", core.id))
+    // TODO: better design
+    (start..num_cores)
+        .into_iter()
+        .map(|id| {
+            match (
+                setup.with_core_affin,
+                setup.with_exec_parking,
+                setup.with_io_parking,
+            ) {
+                (true, Some(exec_timeout), Some(io_timeout)) => {
+                    let poller_cfg = PollThreadConfig::default()
+                        .with_parking(io_timeout)
+                        .with_core_affinity(id)
+                        .with_name(format!("imputio-io-{:?}", id));
+                    ExecThreadConfig::default()
+                        .with_core_affinity(id)
+                        .with_parking(exec_timeout)
+                        .with_poll_thread_cfg(poller_cfg)
+                        .with_name(format!("imputio-exec-{:?}", id))
+                }
+                (false, Some(exec_timeout), Some(io_timeout)) => {
+                    let poller_cfg = PollThreadConfig::default()
+                        .with_parking(io_timeout)
+                        .with_name(format!("imputio-io-{:?}", id));
+                    ExecThreadConfig::default()
+                        .with_parking(exec_timeout)
+                        .with_poll_thread_cfg(poller_cfg)
+                        .with_name(format!("imputio-exec-{:?}", id))
+                }
+                (true, None, Some(io_timeout)) => {
+                    let poller_cfg = PollThreadConfig::default()
+                        .with_core_affinity(id)
+                        .with_parking(io_timeout)
+                        .with_name(format!("imputio-io-{:?}", id));
+                    ExecThreadConfig::default()
+                        .with_core_affinity(id)
+                        .with_poll_thread_cfg(poller_cfg)
+                        .with_name(format!("imputio-exec-{:?}", id))
+                }
+                (true, Some(exec_timeout), None) => {
+                    let poller_cfg = PollThreadConfig::default()
+                        .with_core_affinity(id)
+                        .with_name(format!("imputio-io-{:?}", id));
+                    ExecThreadConfig::default()
+                        .with_core_affinity(id)
+                        .with_parking(exec_timeout)
+                        .with_poll_thread_cfg(poller_cfg)
+                        .with_name(format!("imputio-exec-{:?}", id))
+                }
+                (true, None, None) => {
+                    let poller_cfg = PollThreadConfig::default()
+                        .with_core_affinity(id)
+                        .with_name(format!("imputio-io-{:?}", id));
+                    ExecThreadConfig::default()
+                        .with_core_affinity(id)
+                        .with_poll_thread_cfg(poller_cfg)
+                        .with_name(format!("imputio-exec-{:?}", id))
+                }
+                (false, None, None) => {
+                    let poller_cfg =
+                        PollThreadConfig::default().with_name(format!("imputio-io-{:?}", id));
+                    ExecThreadConfig::default()
+                        .with_poll_thread_cfg(poller_cfg)
+                        .with_name(format!("imputio-exec-{:?}", id))
+                }
+                (false, Some(exec_timeout), None) => {
+                    let poller_cfg =
+                        PollThreadConfig::default().with_name(format!("imputio-io-{:?}", id));
+                    ExecThreadConfig::default()
+                        .with_parking(exec_timeout)
+                        .with_poll_thread_cfg(poller_cfg)
+                        .with_name(format!("imputio-exec-{:?}", id))
+                }
+                (false, None, Some(io_timeout)) => {
+                    let poller_cfg = PollThreadConfig::default()
+                        .with_parking(io_timeout)
+                        .with_name(format!("imputio-io-{:?}", id));
+                    ExecThreadConfig::default()
+                        .with_poll_thread_cfg(poller_cfg)
+                        .with_name(format!("imputio-exec-{:?}", id))
+                }
             }
         })
         .collect::<Vec<_>>()
@@ -161,16 +199,17 @@ fn rt_setup(execs: Vec<ExecThreadConfig>) -> ImputioRuntime {
 }
 
 fn setup_default(
-    with_parking: Option<u64>,
+    with_io_parking: Option<u64>,
+    with_exec_parking: Option<u64>,
     start_core: Option<usize>,
     bench_core: Option<usize>,
 ) -> ImputioRuntime {
     let setup = BenchSetup {
         start_core,
         bench_core,
-        available_cores: None,
         with_core_affin: true,
-        with_parking,
+        with_io_parking,
+        with_exec_parking,
     };
     let execs = thread_setup(setup);
 
@@ -178,7 +217,7 @@ fn setup_default(
 }
 
 fn test_default_parking_10millis(criterion: &mut Criterion) {
-    let mut rt = setup_default(Some(10), Some(1), Some(0));
+    let mut rt = setup_default(Some(10), Some(10), Some(1), Some(0));
     let mut group = criterion.benchmark_group("default-parking");
     group.bench_function("default_parking", |b| {
         b.iter(|| rt.block_on(async move { spawn!(do_some_tcp_io()) }))
@@ -186,54 +225,17 @@ fn test_default_parking_10millis(criterion: &mut Criterion) {
     group.finish();
 }
 
-fn test_parking_100millis(criterion: &mut Criterion) {
-    let mut rt = setup_default(Some(100), Some(1), Some(0));
-    let mut group = criterion.benchmark_group("100mills-parking");
-    group.bench_function("100millis_parking", |b| {
+fn test_parking_50millis(criterion: &mut Criterion) {
+    let mut rt = setup_default(Some(50), Some(50), Some(1), Some(0));
+    let mut group = criterion.benchmark_group("50mills-parking");
+    group.bench_function("50millis_parking", |b| {
         b.iter(|| rt.block_on(async move { spawn!(do_some_tcp_io()) }))
     });
     group.finish();
 }
 
 fn test_no_io_parking(criterion: &mut Criterion) {
-    let available_cores = core_affinity::get_core_ids().unwrap_or_default();
-    let mut start = 0;
-    if !available_cores.is_empty() {
-        core_affinity::set_for_current(available_cores[0]);
-        start = 1;
-    }
-
-    let execs = available_cores[start..]
-        .iter()
-        .map(|core| {
-            let poller_cfg = PollThreadConfig::default()
-                .with_core_affinity(core.id)
-                .with_no_parking()
-                .with_name(format!("imputio-io-{:?}", core.id));
-            ExecThreadConfig::default()
-                .with_core_affinity(core.id)
-                .with_poll_thread_cfg(poller_cfg)
-                .with_name(format!("imputio-exec-{:?}", core.id))
-        })
-        .collect::<Vec<_>>();
-
-    let exec_cfg = if execs.is_empty() {
-        ExecConfig::default()
-    } else {
-        ExecConfig::default().with_cfg(execs)
-    };
-
-    let (shutdown_tx, shutdown_rx) = flume::unbounded();
-    let rx = shutdown_rx.clone();
-
-    let mut rt = ImputioRuntime::builder()
-        .with_exec_config(exec_cfg)
-        .shutdown((shutdown_tx, rx))
-        .build()
-        .expect("Failed to create runtime");
-
-    rt.run();
-
+    let mut rt = setup_default(None, Some(10), Some(5), Some(0));
     let mut group = criterion.benchmark_group("no-io-parking");
 
     group.bench_function("no_io_parking", |b| {
@@ -243,50 +245,14 @@ fn test_no_io_parking(criterion: &mut Criterion) {
 }
 
 fn test_no_exec_parking(criterion: &mut Criterion) {
-    let available_cores = core_affinity::get_core_ids().unwrap_or_default();
-    let mut start = 0;
-    if !available_cores.is_empty() {
-        core_affinity::set_for_current(available_cores[0]);
-        start = 1;
-    }
-
-    let execs = available_cores[start..]
-        .iter()
-        .map(|core| {
-            let poller_cfg = PollThreadConfig::default()
-                .with_core_affinity(core.id)
-                .with_name(format!("imputio-io-{:?}", core.id));
-            ExecThreadConfig::default()
-                .with_core_affinity(core.id)
-                .with_poll_thread_cfg(poller_cfg)
-                .with_name(format!("imputio-exec-{:?}", core.id))
-                .with_no_parking()
-        })
-        .collect::<Vec<_>>();
-
-    let exec_cfg = if execs.is_empty() {
-        ExecConfig::default()
-    } else {
-        ExecConfig::default().with_cfg(execs)
-    };
-
-    let (shutdown_tx, shutdown_rx) = flume::unbounded();
-    let rx = shutdown_rx.clone();
-
-    let mut rt = ImputioRuntime::builder()
-        .with_exec_config(exec_cfg)
-        .shutdown((shutdown_tx, rx))
-        .build()
-        .expect("Failed to create runtime");
-
-    rt.run();
-
+    let mut rt = setup_default(Some(10), None, Some(5), Some(0));
     let mut group = criterion.benchmark_group("no-exec-parking");
 
     group.bench_function("no_exec_parking", |b| {
         b.iter(|| rt.block_on(async move { spawn!(do_some_tcp_io()) }))
     });
     group.finish();
+    drop(rt)
 }
 
 criterion_group! {
@@ -304,7 +270,7 @@ criterion_group! {
 criterion_group! {
     name = longer_parking;
     config = Criterion::default().significance_level(0.1).sample_size(50);
-    targets = test_default_parking_10millis, test_parking_100millis
+    targets = test_default_parking_10millis, test_parking_50millis
 }
 
 criterion_group! {
