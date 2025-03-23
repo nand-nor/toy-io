@@ -19,10 +19,6 @@ core_affinity.workspace=true
 delay-delete=["imputio-utils/delay-delete"]
 
 [[example]]
-name = "events"
-path = "./events/main.rs"
-
-[[example]]
 name = "block_on"
 path = "./block_on/main.rs"
 

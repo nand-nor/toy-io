@@ -1,5 +1,5 @@
 [workspace]
-members=["imputio", "imputio-utils", "examples"]
+members=["imputio", "imputio-utils", "examples", "benches"]
 resolver = "2"
 
 [workspace.package]

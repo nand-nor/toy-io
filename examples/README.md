@@ -8,13 +8,6 @@ Example showing the use of `block_on` functionality from the runtime
 RUST_LOG=debug cargo run --example block_on 
 ```
 
-## `events`
-Example showing the use of the imputio-utils library that provides a simple async event bus actor/handle. 
-Optional features include `fairness` and `delay-delete`
-```
-RUST_LOG=debug cargo run --example events [--features=["fairness"],["delay-delete"]]
-```
-
 ## `config-events`
 Example of advanced configuration options to provide to the runtime builder, extending the `events` example
 Optional features include `fairness` and `delay-delete`

@@ -163,12 +163,6 @@ async fn future_spam_with_event_bus(
 
     let matcher_one = |event: &Packet| event.size == 0;
 
-    //std::thread::spawn(move || {
-    //    spawn_blocking!(async move {
-
-    //    });
-    //});
-
     event_poll_matcher(&subscriber_three, matcher_one, Some((tx_1, ())))
         .await
         .ok();
