@@ -6,7 +6,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    vec::IntoIter,
 };
+
+use crate::{io::PollerCfg, ImputioTaskHandle};
 
 #[derive(Clone, Debug)]
 pub struct ExecConfig {
@@ -26,7 +29,7 @@ impl Default for ExecConfig {
 impl IntoIterator for ExecConfig {
     type Item = ExecThreadConfig;
 
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.exec_thread_config.into_iter()
@@ -54,6 +57,7 @@ pub struct ThreadConfig {
     thread_name: String,
     stack_size: usize,
     core_id: Option<usize>,
+    parking: Option<u64>,
 }
 
 impl Default for ThreadConfig {
@@ -62,6 +66,7 @@ impl Default for ThreadConfig {
             thread_name: "imputio-thread".to_string(),
             stack_size: u16::MAX as usize,
             core_id: None,
+            parking: Some(10),
         }
     }
 }
@@ -79,6 +84,16 @@ impl ThreadConfig {
 
     pub fn with_stack_size(mut self, size: usize) -> Self {
         self.stack_size = size;
+        self
+    }
+
+    pub fn with_no_parking(mut self) -> Self {
+        self.parking = None;
+        self
+    }
+
+    pub fn with_parking(mut self, timeout: u64) -> Self {
+        self.parking = Some(timeout);
         self
     }
 }
@@ -117,8 +132,21 @@ impl ExecThreadConfig {
         self
     }
 
+    /// set statck size of the thread
     pub fn with_stack_size(mut self, size: usize) -> Self {
         self.thread_cfg = self.thread_cfg.with_stack_size(size);
+        self
+    }
+
+    /// set thread to never call park_timeout
+    pub fn with_no_parking(mut self) -> Self {
+        self.thread_cfg = self.thread_cfg.with_no_parking();
+        self
+    }
+
+    /// set the amount of time the thread will park with timeout
+    pub fn with_parking(mut self, timeout: u64) -> Self {
+        self.thread_cfg = self.thread_cfg.with_parking(timeout);
         self
     }
 }
@@ -161,9 +189,23 @@ impl PollThreadConfig {
         self.thread_cfg = self.thread_cfg.with_stack_size(size);
         self
     }
-}
 
-use crate::{io::PollerCfg, ImputioTaskHandle};
+    /// set thread to never call park_timeout
+    pub fn with_no_parking(mut self) -> Self {
+        self.thread_cfg = self.thread_cfg.with_no_parking();
+        self
+    }
+
+    /// set the amount of time the thread will park with timeout
+    pub fn with_parking(mut self, timeout: u64) -> Self {
+        self.thread_cfg = self.thread_cfg.with_parking(timeout);
+        self
+    }
+
+    pub fn parking(self) -> Option<u64> {
+        self.thread_cfg.parking
+    }
+}
 
 #[inline]
 pub fn imputio_spawn<F, T>(fut: F, priority: crate::Priority) -> ImputioTaskHandle<T>

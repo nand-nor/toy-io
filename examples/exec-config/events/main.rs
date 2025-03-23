@@ -10,7 +10,9 @@ use std::{num::NonZero, thread::sleep, time::Duration};
 
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-use imputio::{spawn, ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig, Priority};
+use imputio::{
+    spawn, spawn_blocking, ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig, Priority,
+};
 
 use imputio_utils::event_bus::{event_poll_matcher, EventBusHandle, PubHandle, SubHandle};
 
@@ -127,15 +129,11 @@ async fn future_spam_with_event_bus(
     // spam another future that should exit the first poller
     std::thread::spawn(move || {
         sleep(Duration::from_secs(5));
-        let task = spawn!(
-            pub_two.publish_event(Packet {
-                _bytes: &[0xca, 0xfe, 0xb0, 0xba],
-                size: 4,
-            }),
-            Priority::High
-        );
-
-        task.blocking_await().ok();
+        spawn_blocking!(pub_two.publish_event(Packet {
+            _bytes: &[0xca, 0xfe, 0xb0, 0xba],
+            size: 4,
+        }))
+        .ok();
     });
 
     let fut = async move {
@@ -158,32 +156,22 @@ async fn future_spam_with_event_bus(
 
     // spam yet more futures
     std::thread::spawn(move || {
-        let fut = async move {
+        spawn_blocking!(async move {
             simulate_more_events(Duration::from_secs(7), pub_two).await;
-        };
-        let task = spawn!(fut, Priority::High);
-        task.blocking_await().ok();
+        });
     });
 
     let matcher_one = |event: &Packet| event.size == 0;
 
-    std::thread::spawn(move || {
-        let fut = async move {
-            event_poll_matcher(&subscriber_three, matcher_one, Some((tx_1, ())))
-                .await
-                .ok();
-        };
-        let task = spawn!(fut, Priority::High);
-        task.blocking_await().ok();
-    });
+    event_poll_matcher(&subscriber_three, matcher_one, Some((tx_1, ())))
+        .await
+        .ok();
 
     // spam yet more futures
     std::thread::spawn(move || {
-        let fut = async move {
+        spawn_blocking!(async move {
             simulate_more_events(Duration::from_secs(7), pub_two).await;
-        };
-        let task = spawn!(fut, Priority::High);
-        task.blocking_await().ok();
+        });
     });
 
     let matcher_two = |event: &Packet| event._bytes == [0xbe, 0xef, 0xfa, 0xce];
@@ -196,8 +184,12 @@ async fn future_spam_with_event_bus(
 
     // expect three shut down notices from the event_poll_matcher methods
     block_exit_rx.recv().ok();
+    tracing::info!("First exit received...");
+
     block_exit_rx.recv().ok();
+    tracing::info!("Second exit received...");
     block_exit_rx.recv().ok();
+    tracing::info!("Final exit received");
 
     // demonstrate unsubscribing after exiting poll loop
     let id = subscriber_two.id();

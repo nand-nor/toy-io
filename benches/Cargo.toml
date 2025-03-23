@@ -1,0 +1,30 @@
+[package]
+name = "benches"
+version = "0.0.0"
+edition = "2021"
+
+[features]
+fairness=["imputio/fairness"]
+
+[dependencies]
+imputio.workspace=true
+imputio-utils.workspace=true
+tracing.workspace=true
+criterion = "0.5.1"
+flume.workspace=true
+core_affinity.workspace=true
+
+[[bench]]
+name="simple"
+path="simple.rs"
+harness=false
+
+[[bench]]
+name="rt-cfg"
+path="rt_cfg.rs"
+harness=false
+
+[[bench]]
+name="parking"
+path="parking.rs"
+harness=false

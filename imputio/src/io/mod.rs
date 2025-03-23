@@ -5,9 +5,14 @@
 mod epoll;
 pub use epoll::{Operation, Poller, PollerCfg};
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    fmt,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::{self, park_timeout},
+    time::Duration,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -42,8 +47,8 @@ pub struct PollHandle {
     tx: flume::Sender<IoOp>,
 }
 
-impl std::fmt::Debug for PollHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PollHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PollHandle").finish()
     }
 }
@@ -56,9 +61,10 @@ impl PollHandle {
     pub fn initialize(
         poll_cfg: PollerCfg,
         shutdown: Arc<AtomicBool>,
+        parking: Option<u64>,
     ) -> Result<(PollerActor, PollHandle)> {
         let (tx, rx) = flume::unbounded();
-        let poll_ring = PollerActor::new(rx, shutdown, poll_cfg)?;
+        let poll_ring = PollerActor::new(rx, shutdown, poll_cfg, parking)?;
         let handle = Self::new(tx);
         Ok((poll_ring, handle))
     }
@@ -105,13 +111,14 @@ pub struct PollerActor {
     receiver: flume::Receiver<IoOp>,
     poller: Poller,
     shutdown: Arc<AtomicBool>,
+    parking: Option<u64>,
 }
 
 unsafe impl Send for PollerActor {}
 unsafe impl Sync for PollerActor {}
 
-impl std::fmt::Debug for PollerActor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PollerActor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PollerActor").finish()
     }
 }
@@ -121,11 +128,13 @@ impl PollerActor {
         receiver: flume::Receiver<IoOp>,
         shutdown: Arc<AtomicBool>,
         poll_cfg: PollerCfg,
+        parking: Option<u64>,
     ) -> Result<Self> {
         Ok(Self {
             poller: Poller::new(poll_cfg)?,
             receiver,
             shutdown,
+            parking,
         })
     }
 
@@ -133,11 +142,11 @@ impl PollerActor {
     pub fn run(mut self) {
         tracing::trace!(
             "Run io poller thread id: {:?}, name: {:?}",
-            std::thread::current().id(),
-            std::thread::current().name()
+            thread::current().id(),
+            thread::current().name()
         );
 
-        self.poller.set_id(std::thread::current().id());
+        self.poller.set_id(thread::current().id());
 
         loop {
             if let Ok(event) = self.receiver.try_recv() {
@@ -147,6 +156,8 @@ impl PollerActor {
                     IoOp::Process => self.process().ok(),
                     IoOp::PollAndProcess => self.poll_and_process().ok(),
                 };
+            } else if let Some(park) = self.parking {
+                park_timeout(Duration::from_millis(park));
             }
 
             if self.shutdown.load(Ordering::SeqCst) {
@@ -160,7 +171,7 @@ impl PollerActor {
     fn shutdown(self) {
         tracing::trace!(
             "IO poller actor id {:?} shutting down",
-            std::thread::current().id()
+            thread::current().id()
         );
         self.poller.shutdown();
     }
