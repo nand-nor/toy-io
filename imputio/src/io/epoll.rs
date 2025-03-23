@@ -1,4 +1,4 @@
-use mio::{event::Event, net::TcpListener, Events, Interest, Poll as EPoller, Token};
+use mio::{Events, Interest, Poll as EPoller, Token, event::Event, net::TcpListener};
 use slab::Slab;
 use std::{
     collections::HashMap,

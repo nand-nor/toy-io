@@ -3,13 +3,13 @@ pub mod handle;
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     vec::IntoIter,
 };
 
-use crate::{io::PollerCfg, ImputioTaskHandle};
+use crate::{ImputioTaskHandle, io::PollerCfg};
 
 #[derive(Clone, Debug)]
 pub struct ExecConfig {

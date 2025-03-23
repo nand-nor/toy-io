@@ -1,7 +1,7 @@
 [package]
 name = "imputio-examples"
 version = "0.0.0"
-edition = "2021"
+edition = "2024"
 authors = ["nand-nor <a13xandra.cliff0rd@gmail.com>"]
 
 [dependencies]

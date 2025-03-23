@@ -14,15 +14,15 @@ use executor::handle::ExecHandleCoordinator;
 use io::Operation;
 
 pub use executor::{
-    imputio_spawn as spawn, imputio_spawn_blocking as spawn_blocking, ExecConfig, ExecThreadConfig,
-    PollThreadConfig,
+    ExecConfig, ExecThreadConfig, PollThreadConfig, imputio_spawn as spawn,
+    imputio_spawn_blocking as spawn_blocking,
 };
 use runtime::ImputioRuntimeBuilder;
 pub use runtime::{ImputioRuntime, RuntimeError};
 pub use task::{ImputioTask, ImputioTaskHandle};
 
 // re-export mio dep's Interest and Event objects
-pub use mio::{event::Event, Interest};
+pub use mio::{Interest, event::Event};
 
 use std::{
     os::fd::RawFd,

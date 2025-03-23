@@ -6,7 +6,7 @@ use std::net::TcpListener;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use imputio::{
-    spawn, Event, ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig, Priority,
+    Event, ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig, Priority, spawn,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

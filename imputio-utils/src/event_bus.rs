@@ -415,11 +415,13 @@ pub fn cleanup_task<T: Send + Clone + 'static>(
     duration: std::time::Duration,
 ) {
     let handle: &'static EventBusHandle<T> = Box::leak(Box::new(handle));
-    std::thread::spawn(move || loop {
-        tracing::trace!("Executing clean up logic on event bus");
-        spawn_blocking!(handle.cleanup());
-        std::thread::yield_now();
-        std::thread::park_timeout(duration);
+    std::thread::spawn(move || {
+        loop {
+            tracing::trace!("Executing clean up logic on event bus");
+            spawn_blocking!(handle.cleanup());
+            std::thread::yield_now();
+            std::thread::park_timeout(duration);
+        }
     });
 }
 

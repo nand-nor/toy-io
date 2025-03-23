@@ -8,8 +8,8 @@ pub use epoll::{Operation, Poller, PollerCfg};
 use std::{
     fmt,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread::{self, park_timeout},
     time::Duration,

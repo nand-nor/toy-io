@@ -1,8 +1,8 @@
 //! Example of a simple server using mio
 
 use mio::{
-    net::{TcpListener, TcpStream},
     Events, Interest, Poll as MioPoll, Token,
+    net::{TcpListener, TcpStream},
 };
 use std::{
     error::Error,
@@ -15,7 +15,7 @@ use std::{
 };
 use tracing_subscriber::FmtSubscriber;
 
-use imputio::{rt_entry, ImputioTask};
+use imputio::{ImputioTask, rt_entry};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = FmtSubscriber::builder()

@@ -1,6 +1,6 @@
 //! Benchmarks of simple future
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use std::{
     future::{Future, IntoFuture},
@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use imputio::{spawn, ImputioRuntime, Priority};
+use imputio::{ImputioRuntime, Priority, spawn};
 
 pub struct ExampleTask {
     pub count: usize,
