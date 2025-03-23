@@ -3,8 +3,8 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::Poll,
     thread::{self, park_timeout},
@@ -16,9 +16,9 @@ use core_affinity::CoreId;
 use rand::{self, Rng};
 
 use crate::{
+    Priority,
     io::{Operation, PollError, PollHandle},
     task::{ImputioTask, ImputioTaskHandle},
-    Priority,
 };
 
 use super::{ExecConfig, PollThreadConfig, ThreadConfig};

@@ -2,8 +2,8 @@ use std::{
     fmt::{self, Debug},
     future::Future,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread::{self, ThreadId},
 };
@@ -14,9 +14,10 @@ use flume::{Receiver, Sender, TryRecvError};
 use thiserror::Error;
 
 use crate::{
+    ExecConfig, ExecThreadConfig, PollThreadConfig,
     executor::handle::{ExecError, ExecHandleCoordinator},
     io::PollError,
-    spawn_blocking, ExecConfig, ExecThreadConfig, PollThreadConfig,
+    spawn_blocking,
 };
 
 #[derive(Error, Debug)]
@@ -272,7 +273,7 @@ mod tests {
         task::{Context, Poll},
     };
 
-    use crate::{spawn, spawn_blocking, Priority};
+    use crate::{Priority, spawn, spawn_blocking};
 
     /// The [`std::future::Future`] impl for [`ExampleTask`]
     /// returns [`Poll::Pending`] until internal count reaches 5
@@ -327,7 +328,7 @@ mod tests {
     const EXPECTED_OTHER_EX_RET: usize = 3;
 
     #[test]
-    #[ignore]
+    //#[ignore]
     fn test_spawn_simple() -> Result<(), Box<dyn std::error::Error>> {
         let tx = ImputioRuntime::new().run();
         // can be any value but choosing something below EXPECTED_EX_RET
@@ -370,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    //#[ignore]
     fn test_spawn_in_block_on_ctx() {
         ImputioRuntime::new().block_on(async move {
             // count does not matter here as this test
@@ -407,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_runtime_pin_core_build() {
-        use libc::{cpu_set_t, sched_getaffinity, CPU_ISSET};
+        use libc::{CPU_ISSET, cpu_set_t, sched_getaffinity};
 
         // test assumes the runner has at least 4 cores!
         let cpu = 3;

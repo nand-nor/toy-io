@@ -1,9 +1,9 @@
 //! Benchmarks comparing spawning on different runtime builds
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
-use imputio::{spawn, ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig};
-use imputio_utils::event_bus::{event_poll_matcher, EventBusHandle, PubHandle, SubHandle};
+use imputio::{ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig, spawn};
+use imputio_utils::event_bus::{EventBusHandle, PubHandle, SubHandle, event_poll_matcher};
 
 #[derive(Clone)]
 struct Packet<'a> {

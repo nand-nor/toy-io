@@ -3,7 +3,7 @@ members=["imputio", "imputio-utils", "examples", "benches"]
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 authors = ["nand-nor <a13xandra.cliff0rd@gmail.com>"]
 
 [workspace.dependencies]

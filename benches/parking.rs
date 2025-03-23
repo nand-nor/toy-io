@@ -6,8 +6,8 @@ use std::{
 };
 
 use core_affinity::CoreId;
-use criterion::{criterion_group, criterion_main, Criterion};
-use imputio::{spawn, ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig};
+use criterion::{Criterion, criterion_group, criterion_main};
+use imputio::{ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig, spawn};
 
 async fn do_some_tcp_io() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();

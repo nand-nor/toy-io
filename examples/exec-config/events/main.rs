@@ -11,10 +11,10 @@ use std::{num::NonZero, thread::sleep, time::Duration};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use imputio::{
-    spawn, spawn_blocking, ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig, Priority,
+    ExecConfig, ExecThreadConfig, ImputioRuntime, PollThreadConfig, Priority, spawn, spawn_blocking,
 };
 
-use imputio_utils::event_bus::{event_poll_matcher, EventBusHandle, PubHandle, SubHandle};
+use imputio_utils::event_bus::{EventBusHandle, PubHandle, SubHandle, event_poll_matcher};
 
 #[derive(Clone)]
 struct Packet<'a> {
@@ -83,8 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     Ok(())
 }
 
-async fn future_spam_with_event_bus(
-) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+async fn future_spam_with_event_bus()
+-> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let (block_exit_tx, block_exit_rx) = flume::unbounded();
 
     let tx_1 = block_exit_tx.clone();
