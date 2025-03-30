@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 futures-lite.workspace=true
-flume.workspace=true
+flume= {workspace=true, features=["async"]}
 tracing.workspace=true
 thiserror.workspace=true
 imputio.workspace=true

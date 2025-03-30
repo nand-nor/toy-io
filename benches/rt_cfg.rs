@@ -110,10 +110,7 @@ fn test_simple_rt(criterion: &mut Criterion) {
     rt.run();
 
     criterion.bench_function("simple_rt", |b| {
-        b.iter(|| {
-            rt.clone()
-                .block_on(async move { spawn!(event_bus_example()) })
-        })
+        b.iter(|| rt.block_on(async move { spawn!(event_bus_example()) }))
     });
 }
 
@@ -124,10 +121,7 @@ fn test_default_rt(criterion: &mut Criterion) {
     rt.run();
 
     criterion.bench_function("default_rt", |b| {
-        b.iter(|| {
-            rt.clone()
-                .block_on(async move { spawn!(event_bus_example()) })
-        })
+        b.iter(|| rt.block_on(async move { spawn!(event_bus_example()) }))
     });
 }
 
@@ -170,10 +164,7 @@ fn test_complex_rt(criterion: &mut Criterion) {
     rt.run();
 
     criterion.bench_function("complex_rt", |b| {
-        b.iter(|| {
-            rt.clone()
-                .block_on(async move { spawn!(event_bus_example()) })
-        })
+        b.iter(|| rt.block_on(async move { spawn!(event_bus_example()) }))
     });
 }
 

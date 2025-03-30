@@ -29,6 +29,10 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
+#[cfg(feature = "tikv-jemallocator")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 pub(crate) static EXECUTOR: LazyLock<ArcSwap<ExecHandleCoordinator>> =
     LazyLock::new(|| ArcSwap::from(Arc::new(ExecHandleCoordinator::new())));
 
@@ -39,10 +43,21 @@ where
     F: std::future::Future<Output = R> + Send + 'static,
     R: Send + 'static,
 {
-    ImputioRuntimeBuilder::default()
+    let mut rt = ImputioRuntimeBuilder::default()
         .build()
-        .unwrap_or_else(|_| panic!("Unable to startup imputio runtime"))
-        .block_on(fut)
+        .unwrap_or_else(|_| panic!("Unable to startup imputio runtime"));
+
+    rt.block_on(fut)
+}
+
+fn check_io() -> Result<(), RuntimeError> {
+    if !cfg!(feature = "io") {
+        let msg = "IO feature is not currently enabled";
+        tracing::error!("{msg}");
+        Err(RuntimeError::Internal(msg.to_string()))
+    } else {
+        Ok(())
+    }
 }
 
 /// Provides public method for registering TCP socket without having a handle to the
@@ -52,6 +67,7 @@ pub fn register_tcp_socket(
     interest: Option<Interest>,
     notifier: Option<flume::Sender<Event>>,
 ) -> Result<(), RuntimeError> {
+    check_io()?;
     let interest = if let Some(i) = interest {
         i
     } else {
@@ -78,6 +94,7 @@ pub fn register_fd(
     interest: Option<Interest>,
     notifier: Option<flume::Sender<Event>>,
 ) -> Result<(), RuntimeError> {
+    check_io()?;
     let interest = if let Some(i) = interest {
         i
     } else {
@@ -99,6 +116,7 @@ pub fn register_fd(
 /// Provides public method for registering general IO operation having a handle to the
 /// runtime object. Excepts runtime to be in running state
 pub fn add_operation_to_io_poller(op: Operation) -> Result<(), RuntimeError> {
+    check_io()?;
     crate::EXECUTOR.load().submit_io_op(op)?;
     Ok(())
 }

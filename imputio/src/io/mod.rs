@@ -35,8 +35,6 @@ type Result<T> = std::result::Result<T, PollError>;
 pub enum IoOp {
     Submit { op: Operation },
     Poll,
-    Process,
-    PollAndProcess,
 }
 
 unsafe impl Sync for IoOp {}
@@ -82,26 +80,6 @@ impl PollHandle {
         self.tx
             .send(IoOp::Poll)
             .inspect_err(|e| tracing::error!("Poll op failure {e:}"))?;
-
-        Ok(())
-    }
-
-    // FIXME: process is only needed for io_uring
-    #[allow(unused)]
-    pub fn poll_and_process(&self) -> Result<()> {
-        self.tx
-            .send(IoOp::PollAndProcess)
-            .inspect_err(|e| tracing::error!("PollAndProcess op failure {e:}"))?;
-
-        Ok(())
-    }
-
-    // FIXME: process is only needed for io_uring
-    #[allow(unused)]
-    pub fn process(&self) -> Result<()> {
-        self.tx
-            .send(IoOp::Process)
-            .inspect_err(|e| tracing::error!("Process op failure {e:}"))?;
 
         Ok(())
     }
@@ -153,8 +131,6 @@ impl PollerActor {
                 match event {
                     IoOp::Submit { op } => self.submit(op).ok(),
                     IoOp::Poll => self.poll().ok(),
-                    IoOp::Process => self.process().ok(),
-                    IoOp::PollAndProcess => self.poll_and_process().ok(),
                 };
             } else if let Some(park) = self.parking {
                 park_timeout(Duration::from_millis(park));
@@ -183,21 +159,8 @@ impl PollerActor {
     }
 
     #[inline]
-    fn poll_and_process(&mut self) -> Result<()> {
-        self.poll()?;
-        self.process()?;
-        Ok(())
-    }
-
-    #[inline]
     fn poll(&mut self) -> Result<()> {
         self.poller.poll()?;
-        Ok(())
-    }
-
-    #[inline]
-    fn process(&mut self) -> Result<()> {
-        // FIXME: process step only needed for io_uring
         Ok(())
     }
 }

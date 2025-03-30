@@ -32,7 +32,7 @@ pub enum RuntimeError {
     Internal(String),
 }
 
-#[derive(Builder, Clone)]
+#[derive(Builder)]
 #[builder(build_fn(name = "build_impl"))]
 pub struct ImputioRuntime {
     exec_thread_id: ThreadId,
@@ -205,7 +205,7 @@ impl ImputioRuntime {
     }
 
     pub fn run(&mut self) -> Sender<()> {
-        let (tx, rx) = self.shutdown.clone();
+        let (tx, shutdown_rx) = self.shutdown.clone();
 
         // dont re-run executor threads if already running
         if self.state.swap(true, Ordering::SeqCst) {
@@ -224,7 +224,7 @@ impl ImputioRuntime {
             loop {
                 let exec = crate::EXECUTOR.load();
                 exec.poll();
-                match rx.try_recv() {
+                match shutdown_rx.try_recv() {
                     Ok(()) => {
                         tracing::warn!("Shutdown notice received");
                         break;
@@ -245,13 +245,24 @@ impl ImputioRuntime {
             }
             let exec = crate::EXECUTOR.load();
             exec.shutdown();
+            crate::EXECUTOR.store(Arc::new(ExecHandleCoordinator::new()));
         });
         self.exec_thread_id = handle.thread().id();
         tracing::trace!("Running ImputioRuntime with cfg: {:?}", self.cfg);
         tx
     }
 
-    pub fn block_on<F, R>(mut self, fut: F) -> R
+    /// On shutdown, the existing executor threads and any associated
+    /// spawned threads should be dropped when the global executor handle
+    /// is replaced
+    pub fn shutdown(&self) {
+        self.shutdown.0.send(()).ok();
+        let exec = crate::EXECUTOR.load();
+        exec.shutdown();
+        crate::EXECUTOR.store(Arc::new(ExecHandleCoordinator::new()));
+    }
+
+    pub fn block_on<F, R>(&mut self, fut: F) -> R
     where
         F: Future<Output = R> + Send + 'static,
         R: Send + 'static,
@@ -260,6 +271,12 @@ impl ImputioRuntime {
         // tracks if runtime is already in running state
         self.run();
         spawn_blocking!(fut)
+    }
+}
+
+impl Drop for ImputioRuntime {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -328,7 +345,7 @@ mod tests {
     const EXPECTED_OTHER_EX_RET: usize = 3;
 
     #[test]
-    //#[ignore]
+    #[ignore]
     fn test_spawn_simple() -> Result<(), Box<dyn std::error::Error>> {
         let tx = ImputioRuntime::new().run();
         // can be any value but choosing something below EXPECTED_EX_RET
@@ -371,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    //#[ignore]
+    #[ignore]
     fn test_spawn_in_block_on_ctx() {
         ImputioRuntime::new().block_on(async move {
             // count does not matter here as this test

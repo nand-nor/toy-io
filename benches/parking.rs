@@ -178,29 +178,19 @@ fn setup_default(
 }
 
 fn test_default_parking_10millis(criterion: &mut Criterion) {
-    let rt = setup_default(Some(10), Some(1), Some(0));
+    let mut rt = setup_default(Some(10), Some(1), Some(0));
     let mut group = criterion.benchmark_group("default-parking");
     group.bench_function("default_parking", |b| {
-        b.iter(|| rt.clone().block_on(async move { spawn!(do_some_tcp_io()) }))
+        b.iter(|| rt.block_on(async move { spawn!(do_some_tcp_io()) }))
     });
     group.finish();
 }
 
 fn test_parking_100millis(criterion: &mut Criterion) {
-    let rt = setup_default(Some(100), Some(1), Some(0));
+    let mut rt = setup_default(Some(100), Some(1), Some(0));
     let mut group = criterion.benchmark_group("100mills-parking");
     group.bench_function("100millis_parking", |b| {
-        b.iter(|| rt.clone().block_on(async move { spawn!(do_some_tcp_io()) }))
-    });
-    group.finish();
-}
-
-fn test_no_parking(criterion: &mut Criterion) {
-    let rt = setup_default(None, Some(1), Some(0));
-    let mut group = criterion.benchmark_group("no-parking");
-
-    group.bench_function("no_parking", |b| {
-        b.iter(|| rt.clone().block_on(async move { spawn!(do_some_tcp_io()) }))
+        b.iter(|| rt.block_on(async move { spawn!(do_some_tcp_io()) }))
     });
     group.finish();
 }
@@ -247,7 +237,7 @@ fn test_no_io_parking(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("no-io-parking");
 
     group.bench_function("no_io_parking", |b| {
-        b.iter(|| rt.clone().block_on(async move { spawn!(do_some_tcp_io()) }))
+        b.iter(|| rt.block_on(async move { spawn!(do_some_tcp_io()) }))
     });
     group.finish();
 }
@@ -294,45 +284,38 @@ fn test_no_exec_parking(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("no-exec-parking");
 
     group.bench_function("no_exec_parking", |b| {
-        b.iter(|| rt.clone().block_on(async move { spawn!(do_some_tcp_io()) }))
+        b.iter(|| rt.block_on(async move { spawn!(do_some_tcp_io()) }))
     });
     group.finish();
 }
 
 criterion_group! {
     name = no_io_parking;
-    config = Criterion::default().significance_level(0.2).sample_size(50);
-    targets = test_no_io_parking
+    config = Criterion::default().significance_level(0.1).sample_size(50);
+    targets = test_default_parking_10millis, test_no_io_parking
 }
 
 criterion_group! {
     name = no_exec_parking;
-    config = Criterion::default().significance_level(0.2).sample_size(50);
-    targets = test_no_exec_parking
+    config = Criterion::default().significance_level(0.1).sample_size(50);
+    targets = test_default_parking_10millis, test_no_exec_parking
 }
 
 criterion_group! {
     name = longer_parking;
-    config = Criterion::default().significance_level(0.2).sample_size(50);
+    config = Criterion::default().significance_level(0.1).sample_size(50);
     targets = test_default_parking_10millis, test_parking_100millis
 }
 
 criterion_group! {
     name = parking_config;
-    config = Criterion::default().significance_level(0.2).sample_size(50);
+    config = Criterion::default().significance_level(0.1).sample_size(50);
     targets = test_default_parking_10millis
 }
 
-criterion_group! {
-    name = no_parking;
-    config = Criterion::default().significance_level(0.2).sample_size(50);
-    targets = test_no_parking
-}
-
-criterion_group! {
-    name = parking_config_longer;
-    config = Criterion::default().significance_level(0.2).sample_size(50);
-    targets = test_parking_100millis, test_no_parking
-}
-
-criterion_main!(parking_config, no_parking, no_exec_parking, no_io_parking); //, longer_parking, parking_config_longer);
+criterion_main!(
+    parking_config,
+    no_exec_parking,
+    no_io_parking,
+    longer_parking,
+);
