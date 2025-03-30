@@ -56,7 +56,7 @@ fn test_simple1(criterion: &mut Criterion) {
     rt.run();
 
     criterion.bench_function("simple1", |b| {
-        b.iter(|| rt.clone().block_on(async move { spawn!(counter1()) }))
+        b.iter(|| rt.block_on(async move { spawn!(counter1()) }))
     });
 }
 
@@ -70,7 +70,7 @@ fn test_simple2(criterion: &mut Criterion) {
     rt.run();
 
     criterion.bench_function("simple2", |b| {
-        b.iter(|| rt.clone().block_on(async move { spawn!(counter2()) }))
+        b.iter(|| rt.block_on(async move { spawn!(counter2()) }))
     });
 }
 

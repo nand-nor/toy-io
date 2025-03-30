@@ -8,7 +8,7 @@ authors = ["nand-nor <a13xandra.cliff0rd@gmail.com>"]
 
 [workspace.dependencies]
 futures-lite = "2.6.0"
-flume = {version="0.11.1", features=["eventual-fairness", "async", "select"]}
+flume = {version="0.11.1"}
 tracing = "0.1.41"
 thiserror = "2.0.11"
 mio = {version="1.0.3", features=["net", "os-ext", "os-poll"]}
@@ -16,3 +16,9 @@ slab = "0.4.9"
 core_affinity = "0.8.1"
 imputio = { path = "./imputio"}
 imputio-utils= {path="./imputio-utils"}
+tikv-jemallocator = {version="0.6.0"}
+
+[profile.bench]
+debug = true
+lto = true
+codegen-units = 1

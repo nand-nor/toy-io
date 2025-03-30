@@ -262,19 +262,26 @@ impl Executor {
         shutdown: Arc<AtomicBool>,
         parking: Option<u64>,
     ) -> Result<Self> {
-        let io_thread_parking = cfg.clone().parking();
-        let (actor, handle) =
-            PollHandle::initialize(cfg.poll_cfg, Arc::clone(&shutdown), io_thread_parking)?;
+        let handle = if cfg!(feature = "io") {
+            let io_thread_parking = cfg.clone().parking();
+            let (actor, handle) =
+                PollHandle::initialize(cfg.poll_cfg, Arc::clone(&shutdown), io_thread_parking)?;
 
-        thread::Builder::new()
-            .name(cfg.thread_cfg.thread_name)
-            .stack_size(cfg.thread_cfg.stack_size)
-            .spawn(move || {
-                if let Some(core) = cfg.thread_cfg.core_id {
-                    core_affinity::set_for_current(CoreId { id: core });
-                }
-                actor.run()
-            })?;
+            thread::Builder::new()
+                .name(cfg.thread_cfg.thread_name)
+                .stack_size(cfg.thread_cfg.stack_size)
+                .spawn(move || {
+                    if let Some(core) = cfg.thread_cfg.core_id {
+                        core_affinity::set_for_current(CoreId { id: core });
+                    }
+                    actor.run()
+                })?;
+            handle
+        } else {
+            let (tx, _rx) = flume::bounded(1);
+            PollHandle::new(tx)
+        };
+
         Ok(Self {
             poll_handle: handle,
             rx,
@@ -308,10 +315,10 @@ impl Executor {
 
     #[inline]
     pub fn poll(&mut self) {
-        if let Err(e) = self.poll_handle.poll() {
-            tracing::error!("Error polling io poller {e:}");
-        } else {
-            self.poll_handle.process().ok();
+        if cfg!(feature = "io") {
+            if let Err(e) = self.poll_handle.poll() {
+                tracing::error!("Error polling io poller {e:}");
+            }
         }
 
         if let Some(mut task) = self.get_task() {

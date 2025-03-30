@@ -64,7 +64,7 @@ impl Default for ThreadConfig {
     fn default() -> Self {
         Self {
             thread_name: "imputio-thread".to_string(),
-            stack_size: u16::MAX as usize,
+            stack_size: 131072,
             core_id: None,
             parking: Some(10),
         }
