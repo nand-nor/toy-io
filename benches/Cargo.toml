@@ -13,6 +13,7 @@ tracing.workspace=true
 criterion = "0.5.1"
 flume.workspace=true
 core_affinity.workspace=true
+num_cpus="1.14.0"
 
 [[bench]]
 name="simple"
